@@ -85,20 +85,20 @@ SELECT
     'PR',
     100.5000,
     SDO_GEOMETRY(
-        2003,
-        4326,
-        NULL,
-        SDO_ELEM_INFO_ARRAY(
-            1, 1003, 1
+            2003,
+            4326,
+            NULL,
+            SDO_ELEM_INFO_ARRAY(
+                1, 1003, 1
+            ),
+            SDO_ORDINATE_ARRAY(
+                -51.1700, -23.3100,
+                -51.1600, -23.3100,
+                -51.1600, -23.3000,
+                -51.1700, -23.3000,
+                -51.1700, -23.3100
+            )
         ),
-        SDO_ORDINATE_ARRAY(
-            -51.1700, -23.3000,
-            -51.1600, -23.3000,
-            -51.1600, -23.3100,
-            -51.1700, -23.3100,
-            -51.1700, -23.3000
-        )
-    ),
     id
 FROM dataset_versao
 WHERE conjunto = 'imoveis_rurais'

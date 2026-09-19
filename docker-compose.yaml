@@ -4,6 +4,8 @@ services:
     container_name: oracle
     environment:
       - 'ORACLE_PASSWORD=secret'
+      - 'APP_USER=georural_app'
+      - 'APP_USER_PASSWORD=secret'
     ports:
       - '1521:1521'
     volumes:
