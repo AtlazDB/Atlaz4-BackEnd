@@ -50,14 +50,10 @@ public class ImovelRuralController {
     }
 
     private ImovelRuralResponse toResponse(ImovelRural imovel) {
-        return new ImovelRuralResponse(
-                imovel.getId(),
-                imovel.getCodImovel(),
-                imovel.getMunicipio(),
-                imovel.getEstado(),
-                imovel.getAreaHa(),
-                geoJsonService.converter(imovel.getGeometria()),
-                imovel.getDatasetVersaoId()
+        return ImovelRuralResponse.de(
+                imovel,
+                geoJsonService.converter(imovel.getGeometria())
+
         );
     }
 }
