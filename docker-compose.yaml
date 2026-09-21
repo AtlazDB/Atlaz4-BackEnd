@@ -3,9 +3,9 @@ services:
     image: 'gvenzl/oracle-free:latest'
     container_name: oracle
     environment:
-      - 'ORACLE_PASSWORD=secret'
-      - 'APP_USER=georural_app'
-      - 'APP_USER_PASSWORD=secret'
+      - ORACLE_PASSWORD=${DB_PASSWORD}      
+      - APP_USER=${DB_USERNAME}          
+      - APP_USER_PASSWORD=${DB_PASSWORD}   
     ports:
       - '1521:1521'
     volumes:
