@@ -1,9 +1,6 @@
 package geoRural.service;
 
-import java.io.IOException;
 import java.io.InputStream;
-import java.nio.file.Files;
-import java.nio.file.Path;
 
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
@@ -26,21 +23,16 @@ public class ObjectStorageService {
         this.objectStorage = objectStorage;
     }
 
-    public void enviarArquivo(Path arquivo) throws IOException {
+    public void enviar(String chave, InputStream conteudo, long tamanhoBytes, String contentType) {
+        PutObjectRequest request = PutObjectRequest.builder()
+                .namespaceName(namespace)
+                .bucketName(bucket)
+                .objectName(chave)
+                .contentType(contentType)
+                .contentLength(tamanhoBytes)
+                .putObjectBody(conteudo)
+                .build();
 
-        String nomeArquivo = arquivo.getFileName().toString();
-
-        try (InputStream inputStream = Files.newInputStream(arquivo)) {
-
-            PutObjectRequest request = PutObjectRequest.builder()
-                    .namespaceName(namespace)
-                    .bucketName(bucket)
-                    .objectName(nomeArquivo)
-                    .putObjectBody(inputStream)
-                    .contentLength(Files.size(arquivo))
-                    .build();
-
-            objectStorage.putObject(request);
-        }
+        objectStorage.putObject(request);
     }
 }

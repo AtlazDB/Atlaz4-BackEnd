@@ -1,0 +1,15 @@
+package geoRural.service;
+
+import geoRural.entity.ImovelRural;
+
+import java.util.List;
+
+public interface ImovelRuralService {
+
+    List<ImovelRural> listarTodos();
+
+    ImovelRural buscarPorCodImovel(String codImovel);
+
+    List<ImovelRural> listarPorMunicipio(String municipio);
+
+}
