@@ -9,7 +9,10 @@ import java.time.OffsetDateTime;
 @Table(name = "ARQUIVO_BRUTO")
 public class ArquivoBruto {
 
-    public static final String STATUS_RECEBIDO = "RECEBIDO";
+    public static final String STATUS_RECEBIDO    = "RECEBIDO";
+    public static final String STATUS_PROCESSANDO = "PROCESSANDO";
+    public static final String STATUS_PROCESSADO  = "PROCESSADO";
+    public static final String STATUS_REJEITADO   = "REJEITADO";
 
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)

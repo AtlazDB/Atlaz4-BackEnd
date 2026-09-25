@@ -1,7 +1,7 @@
 package geoRural.entity;
 
 import jakarta.persistence.*;
-import org.locationtech.jts.geom.Polygon;
+import org.locationtech.jts.geom.Geometry;
 
 import java.math.BigDecimal;
 import java.time.OffsetDateTime;
@@ -27,7 +27,7 @@ public class ImovelRural {
     private BigDecimal areaHa;
 
     @Column(name = "GEOMETRIA", columnDefinition = "SDO_GEOMETRY", nullable = false)
-    private Polygon geometria;
+    private Geometry geometria;
 
     @Column(name = "DATASET_VERSAO_ID", nullable = false)
     private Long datasetVersaoId;
@@ -51,8 +51,8 @@ public class ImovelRural {
     public BigDecimal getAreaHa() { return areaHa; }
     public void setAreaHa(BigDecimal areaHa) { this.areaHa = areaHa; }
 
-    public Polygon getGeometria() { return geometria; }
-    public void setGeometria(Polygon geometria) { this.geometria = geometria; }
+    public Geometry getGeometria() { return geometria; }
+    public void setGeometria(Geometry geometria) { this.geometria = geometria; }
 
     public Long getDatasetVersaoId() { return datasetVersaoId; }
     public void setDatasetVersaoId(Long datasetVersaoId) { this.datasetVersaoId = datasetVersaoId; }
