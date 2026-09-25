@@ -21,6 +21,16 @@ public class GlobalExceptionHandler {
         return ResponseEntity.status(HttpStatus.NOT_FOUND).body(ErroResponse.de("Fonte não encontrada."));
     }
 
+    @ExceptionHandler(ArquivoNaoEncontradoException.class)
+    public ResponseEntity<ErroResponse> handleArquivoNaoEncontrado(ArquivoNaoEncontradoException ex) {
+        return ResponseEntity.status(HttpStatus.NOT_FOUND).body(ErroResponse.de(ex.getMessage()));
+    }
+
+    @ExceptionHandler(CargaNaoPermitidaException.class)
+    public ResponseEntity<ErroResponse> handleCargaNaoPermitida(CargaNaoPermitidaException ex) {
+        return ResponseEntity.status(HttpStatus.CONFLICT).body(ErroResponse.de(ex.getMessage()));
+    }
+
     @ExceptionHandler(SiglaDuplicadaException.class)
     public ResponseEntity<ErroResponse> handleSiglaDuplicada(SiglaDuplicadaException ex) {
         return ResponseEntity.status(HttpStatus.CONFLICT).body(ErroResponse.de(ex.getMessage()));
