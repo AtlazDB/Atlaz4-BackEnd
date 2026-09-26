@@ -22,15 +22,22 @@ public class ImovelRuralController {
         this.geoJsonService = geoJsonService;
     }
 
+    // Filtros em ordem de precisão: codIbge (vínculo espacial) > municipio (nome
+    // em texto, mantido por compatibilidade) > estado > todos.
     @GetMapping
     public List<ImovelRuralResponse> listar(
+            @RequestParam(required = false) String codIbge,
             @RequestParam(required = false) String municipio,
             @RequestParam(required = false) String estado) {
 
         List<ImovelRural> imoveis;
 
-        if (municipio != null) {
+        if (codIbge != null && !codIbge.isBlank()) {
+            imoveis = service.listarPorCodIbge(codIbge);
+        } else if (municipio != null) {
             imoveis = service.listarPorMunicipio(municipio);
+        } else if (estado != null && !estado.isBlank()) {
+            imoveis = service.listarPorEstado(estado);
         } else {
             imoveis = service.listarTodos();
         }

@@ -10,4 +10,5 @@ public interface ImovelRuralRepository extends JpaRepository<ImovelRural, Long> 
     Optional<ImovelRural> findByCodImovel(String codImovel);
     List<ImovelRural> findByMunicipio(String municipio);
     List<ImovelRural> findByEstado(String estado);
+    List<ImovelRural> findByMunicipioId(Long municipioId);
 }

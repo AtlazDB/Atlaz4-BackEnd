@@ -12,4 +12,8 @@ public interface ImovelRuralService {
 
     List<ImovelRural> listarPorMunicipio(String municipio);
 
+    List<ImovelRural> listarPorEstado(String estado);
+
+    List<ImovelRural> listarPorCodIbge(String codIbge);
+
 }

@@ -10,6 +10,8 @@ public class DatasetVersao {
 
     public static final String CONJUNTO_IMOVEIS_RURAIS = "imoveis_rurais";
 
+    public static final String CONJUNTO_MUNICIPIOS = "municipios";
+
     public static final String ZONA_TRATADA = "TRATADA";
 
     @Id
