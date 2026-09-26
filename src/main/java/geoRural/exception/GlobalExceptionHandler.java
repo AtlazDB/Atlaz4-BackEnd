@@ -16,6 +16,11 @@ public class GlobalExceptionHandler {
         return ResponseEntity.status(HttpStatus.NOT_FOUND).body(ex.getMessage());
     }
 
+    @ExceptionHandler(MunicipioNaoEncontradoException.class)
+    public ResponseEntity<ErroResponse> handleMunicipioNaoEncontrado(MunicipioNaoEncontradoException ex) {
+        return ResponseEntity.status(HttpStatus.NOT_FOUND).body(ErroResponse.de(ex.getMessage()));
+    }
+
     @ExceptionHandler(FonteNaoEncontradaException.class)
     public ResponseEntity<ErroResponse> handleFonteNaoEncontrada(FonteNaoEncontradaException ex) {
         return ResponseEntity.status(HttpStatus.NOT_FOUND).body(ErroResponse.de("Fonte não encontrada."));
