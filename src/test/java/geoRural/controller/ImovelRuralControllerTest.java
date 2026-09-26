@@ -17,6 +17,8 @@ import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -56,6 +58,38 @@ class ImovelRuralControllerTest {
 
         assertThat(resposta.keySet())
                 .containsExactlyInAnyOrderElementsOf(CAMPOS_PUBLICOS);
+    }
+
+    @Test
+    void filtroPorEstadoChegaAoServico() throws Exception {
+        when(service.listarPorEstado("PR")).thenReturn(List.of(imovelDeTeste()));
+
+        mockMvc.perform(get("/api/v1/imoveis").param("estado", "PR"))
+                .andExpect(status().isOk());
+
+        verify(service).listarPorEstado("PR");
+        verify(service, never()).listarTodos();
+    }
+
+    @Test
+    void filtroPorCodIbgeTemPrioridadeSobreOEstado() throws Exception {
+        when(service.listarPorCodIbge("4113700")).thenReturn(List.of(imovelDeTeste()));
+
+        mockMvc.perform(get("/api/v1/imoveis").param("codIbge", "4113700").param("estado", "PR"))
+                .andExpect(status().isOk());
+
+        verify(service).listarPorCodIbge("4113700");
+        verify(service, never()).listarPorEstado(any());
+    }
+
+    @Test
+    void semFiltroListaTodos() throws Exception {
+        when(service.listarTodos()).thenReturn(List.of(imovelDeTeste()));
+
+        mockMvc.perform(get("/api/v1/imoveis"))
+                .andExpect(status().isOk());
+
+        verify(service).listarTodos();
     }
 
     private static ImovelRural imovelDeTeste() {

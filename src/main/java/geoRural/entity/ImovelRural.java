@@ -32,6 +32,11 @@ public class ImovelRural {
     @Column(name = "DATASET_VERSAO_ID", nullable = false)
     private Long datasetVersaoId;
 
+    // Só leitura por enquanto: quem preenche é a etapa CRUZAMENTO (V4). Assim a
+    // carga de imóveis não sobrescreve o vínculo ao atualizar um imóvel.
+    @Column(name = "MUNICIPIO_ID", insertable = false, updatable = false)
+    private Long municipioId;
+
     @Column(name = "CRIADO_EM", insertable = false, updatable = false)
     private OffsetDateTime criadoEm;
 
@@ -56,6 +61,8 @@ public class ImovelRural {
 
     public Long getDatasetVersaoId() { return datasetVersaoId; }
     public void setDatasetVersaoId(Long datasetVersaoId) { this.datasetVersaoId = datasetVersaoId; }
+
+    public Long getMunicipioId() { return municipioId; }
 
     public OffsetDateTime getCriadoEm() { return criadoEm; }
 }
