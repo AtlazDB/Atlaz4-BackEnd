@@ -9,4 +9,7 @@ public interface DatasetVersaoRepository extends JpaRepository<DatasetVersao, Lo
 
     @Query("select coalesce(max(d.versao), 0) from DatasetVersao d where d.conjunto = :conjunto")
     Integer ultimaVersao(@Param("conjunto") String conjunto);
+
+    /** Alguma execução deste arquivo gerou versão de dados? Se sim, há dado apontando para ele. */
+    boolean existsByExecucao_ArquivoBruto_Id(Long arquivoBrutoId);
 }

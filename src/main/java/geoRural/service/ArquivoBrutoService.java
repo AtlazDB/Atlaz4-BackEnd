@@ -12,4 +12,7 @@ public interface ArquivoBrutoService {
 
     List<ArquivoBruto> listarPorFonte(Long fonteId);
 
+    /** Apaga um arquivo REJEITADO que nunca gerou versão de dados: catálogo e objeto no bucket. */
+    void excluirRejeitado(Long arquivoId);
+
 }
