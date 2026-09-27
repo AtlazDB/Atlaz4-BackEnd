@@ -7,6 +7,7 @@ import java.util.List;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
 
+import geoRural.dto.FiltroImoveis;
 import geoRural.dto.ImovelResumoResponse;
 
 /**
@@ -22,17 +23,17 @@ public class ImovelRuralConsultaRepository {
         this.jdbc = jdbc;
     }
 
-    public long contar(String municipio, String codImovel) {
+    public long contar(FiltroImoveis filtro) {
         List<Object> parametros = new ArrayList<>();
-        String where = filtro(municipio, codImovel, parametros);
+        String where = where(condicoes(filtro, parametros));
         Long total = jdbc.queryForObject("SELECT COUNT(*) FROM imovel_rural" + where, Long.class, parametros.toArray());
         return total == null ? 0 : total;
     }
 
     /** {@code pagina} começa em 1. */
-    public List<ImovelResumoResponse> buscarPagina(String municipio, String codImovel, int pagina, int tamanho) {
+    public List<ImovelResumoResponse> buscarPagina(FiltroImoveis filtro, int pagina, int tamanho) {
         List<Object> parametros = new ArrayList<>();
-        String where = filtro(municipio, codImovel, parametros);
+        String where = where(condicoes(filtro, parametros));
         parametros.add((long) (pagina - 1) * tamanho);
         parametros.add(tamanho);
 
@@ -68,38 +69,64 @@ public class ImovelRuralConsultaRepository {
                                String situacao, byte[] wkb) {}
 
     /**
-     * Imóveis que tocam a caixa da tela, no máximo {@code limite} linhas. O SDO_FILTER usa só o
-     * índice espacial (compara caixas envolventes), que é o bastante para desenhar e é bem rápido.
+     * Imóveis que tocam a caixa da tela e passam no filtro, no máximo {@code limite} linhas. O
+     * SDO_FILTER usa só o índice espacial (compara caixas envolventes), que é o bastante para
+     * desenhar e é bem rápido. O filtro entra ANTES do limite: numa área densa, o limite é
+     * preenchido só com imóveis do município/situação pedidos.
      */
-    public List<ImovelNoMapa> buscarNaArea(double minLon, double minLat, double maxLon, double maxLat, int limite) {
-        String sql = """
-                SELECT cod_imovel, municipio, area_ha, situacao, SDO_UTIL.TO_WKBGEOMETRY(geometria) AS wkb
-                  FROM imovel_rural
-                 WHERE SDO_FILTER(geometria,
-                         SDO_GEOMETRY(2003, 4326, NULL, SDO_ELEM_INFO_ARRAY(1, 1003, 3),
-                                      SDO_ORDINATE_ARRAY(?, ?, ?, ?))) = 'TRUE'
-                   AND ROWNUM <= ?
-                """;
+    public List<ImovelNoMapa> buscarNaArea(double minLon, double minLat, double maxLon, double maxLat,
+                                           FiltroImoveis filtro, int limite) {
+        List<Object> parametros = new ArrayList<>(List.of(minLon, minLat, maxLon, maxLat));
+        List<String> condicoes = new ArrayList<>();
+        condicoes.add("""
+                SDO_FILTER(geometria,
+                           SDO_GEOMETRY(2003, 4326, NULL, SDO_ELEM_INFO_ARRAY(1, 1003, 3),
+                                        SDO_ORDINATE_ARRAY(?, ?, ?, ?))) = 'TRUE'""");
+        condicoes.addAll(condicoes(filtro, parametros));
+        condicoes.add("ROWNUM <= ?");
+        parametros.add(limite);
+
+        String sql = "SELECT cod_imovel, municipio, area_ha, situacao, SDO_UTIL.TO_WKBGEOMETRY(geometria) AS wkb"
+                + " FROM imovel_rural" + where(condicoes);
+
         return jdbc.query(sql, (rs, n) -> new ImovelNoMapa(
                 rs.getString("cod_imovel"),
                 rs.getString("municipio"),
                 rs.getBigDecimal("area_ha"),
                 rs.getString("situacao"),
                 rs.getBytes("wkb")
-        ), minLon, minLat, maxLon, maxLat, limite);
+        ), parametros.toArray());
     }
 
-    /** Filtros por "contém", sem diferenciar maiúsculas. Só concatena texto fixo; os valores vão como parâmetro. */
-    private static String filtro(String municipio, String codImovel, List<Object> parametros) {
+    /**
+     * Condições SQL do filtro. Só concatena texto fixo; os valores vão como parâmetro.
+     *
+     * Município por IGUALDADE, não "contém": com "contém", escolher Ivaí também trazia Ivaiporã,
+     * Ariranha do Ivaí, São João do Ivaí... O CAR grava o nome sem acento ("Ivai") e o IBGE com
+     * ("Ivaí"); o NLSSORT com BINARY_AI compara ignorando acento e maiúsculas, então os dois batem.
+     */
+    private static List<String> condicoes(FiltroImoveis filtro, List<Object> parametros) {
         List<String> condicoes = new ArrayList<>();
-        if (municipio != null && !municipio.isBlank()) {
-            condicoes.add("UPPER(municipio) LIKE '%' || UPPER(?) || '%'");
-            parametros.add(municipio.trim());
+        if (preenchido(filtro.municipio())) {
+            condicoes.add("NLSSORT(municipio, 'NLS_SORT=BINARY_AI') = NLSSORT(?, 'NLS_SORT=BINARY_AI')");
+            parametros.add(filtro.municipio().trim());
         }
-        if (codImovel != null && !codImovel.isBlank()) {
+        if (preenchido(filtro.codImovel())) {
             condicoes.add("UPPER(cod_imovel) LIKE '%' || UPPER(?) || '%'");
-            parametros.add(codImovel.trim());
+            parametros.add(filtro.codImovel().trim());
         }
+        if (preenchido(filtro.situacao())) {
+            condicoes.add("situacao = ?");
+            parametros.add(filtro.situacao().trim().toUpperCase());
+        }
+        return condicoes;
+    }
+
+    private static String where(List<String> condicoes) {
         return condicoes.isEmpty() ? "" : " WHERE " + String.join(" AND ", condicoes);
+    }
+
+    private static boolean preenchido(String valor) {
+        return valor != null && !valor.isBlank();
     }
 }

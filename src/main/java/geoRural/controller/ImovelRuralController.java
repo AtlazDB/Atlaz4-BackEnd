@@ -1,5 +1,6 @@
 package geoRural.controller;
 
+import geoRural.dto.FiltroImoveis;
 import geoRural.dto.ImovelResumoResponse;
 import geoRural.dto.ImovelRuralResponse;
 import geoRural.dto.MapaImoveisResponse;
@@ -56,9 +57,10 @@ public class ImovelRuralController {
             @RequestParam(defaultValue = "1") int pagina,
             @RequestParam(defaultValue = "50") int tamanho,
             @RequestParam(required = false) String municipio,
-            @RequestParam(required = false) String codImovel) {
+            @RequestParam(required = false) String codImovel,
+            @RequestParam(required = false) String situacao) {
 
-        return service.listarPagina(municipio, codImovel, pagina, tamanho);
+        return service.listarPagina(new FiltroImoveis(municipio, codImovel, situacao), pagina, tamanho);
     }
 
     /**
@@ -71,9 +73,12 @@ public class ImovelRuralController {
             @RequestParam(required = false) Double minLat,
             @RequestParam(required = false) Double maxLon,
             @RequestParam(required = false) Double maxLat,
+            @RequestParam(required = false) String municipio,
+            @RequestParam(required = false) String situacao,
             @RequestParam(defaultValue = "1000") int limite) {
 
-        return service.listarNoMapa(minLon, minLat, maxLon, maxLat, limite);
+        return service.listarNoMapa(minLon, minLat, maxLon, maxLat,
+                new FiltroImoveis(municipio, null, situacao), limite);
     }
 
     @GetMapping("/{codImovel}")
