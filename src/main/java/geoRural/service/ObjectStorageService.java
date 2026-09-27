@@ -10,6 +10,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import com.oracle.bmc.objectstorage.ObjectStorage;
+import com.oracle.bmc.objectstorage.requests.DeleteObjectRequest;
 import com.oracle.bmc.objectstorage.requests.GetObjectRequest;
 import com.oracle.bmc.objectstorage.requests.PutObjectRequest;
 
@@ -49,5 +50,14 @@ public class ObjectStorageService {
             Files.copy(in, destino, StandardCopyOption.REPLACE_EXISTING);
         }
         return destino;
+    }
+
+    /**
+     * Apaga um objeto do bucket. Na zona bruta, só para arquivo rejeitado que nunca gerou versão
+     * de dados (ver ArquivoBrutoServiceImpl.excluirRejeitado) — o resto da zona bruta é imutável.
+     */
+    public void apagar(String chave) {
+        objectStorage.deleteObject(DeleteObjectRequest.builder()
+                .namespaceName(namespace).bucketName(bucket).objectName(chave).build());
     }
 }
