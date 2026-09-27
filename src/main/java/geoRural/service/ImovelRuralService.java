@@ -1,5 +1,6 @@
 package geoRural.service;
 
+import geoRural.dto.FiltroImoveis;
 import geoRural.dto.ImovelResumoResponse;
 import geoRural.dto.MapaImoveisResponse;
 import geoRural.dto.PaginaResponse;
@@ -19,9 +20,10 @@ public interface ImovelRuralService {
 
     List<ImovelRural> listarPorCodIbge(String codIbge);
 
-    PaginaResponse<ImovelResumoResponse> listarPagina(String municipio, String codImovel, int pagina, int tamanho);
+    PaginaResponse<ImovelResumoResponse> listarPagina(FiltroImoveis filtro, int pagina, int tamanho);
 
     /** Imóveis da área visível no mapa, em GeoJSON, com no máximo {@code limite} itens. */
-    MapaImoveisResponse listarNoMapa(Double minLon, Double minLat, Double maxLon, Double maxLat, int limite);
+    MapaImoveisResponse listarNoMapa(Double minLon, Double minLat, Double maxLon, Double maxLat,
+                                     FiltroImoveis filtro, int limite);
 
 }

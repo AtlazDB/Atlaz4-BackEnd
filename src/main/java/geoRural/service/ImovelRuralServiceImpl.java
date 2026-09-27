@@ -1,5 +1,6 @@
 package geoRural.service;
 
+import geoRural.dto.FiltroImoveis;
 import geoRural.dto.ImovelResumoResponse;
 import geoRural.dto.MapaImoveisResponse;
 import geoRural.dto.MapaImoveisResponse.Feature;
@@ -77,26 +78,28 @@ public class ImovelRuralServiceImpl implements ImovelRuralService {
     }
 
     @Override
-    public PaginaResponse<ImovelResumoResponse> listarPagina(String municipio, String codImovel,
-                                                             int pagina, int tamanho) {
+    public PaginaResponse<ImovelResumoResponse> listarPagina(FiltroImoveis filtro, int pagina, int tamanho) {
         if (pagina < 1 || tamanho < 1 || tamanho > TAMANHO_MAXIMO) {
             throw new RequisicaoInvalidaException(
                     "pagina deve ser >= 1 e tamanho entre 1 e " + TAMANHO_MAXIMO + ".",
                     List.of("pagina", "tamanho"));
         }
-        long total = consultaRepository.contar(municipio, codImovel);
+        validarSituacao(filtro);
+        long total = consultaRepository.contar(filtro);
         List<ImovelResumoResponse> itens = total == 0
                 ? List.of()
-                : consultaRepository.buscarPagina(municipio, codImovel, pagina, tamanho);
+                : consultaRepository.buscarPagina(filtro, pagina, tamanho);
         return new PaginaResponse<>(itens, total, pagina, tamanho);
     }
 
     @Override
-    public MapaImoveisResponse listarNoMapa(Double minLon, Double minLat, Double maxLon, Double maxLat, int limite) {
+    public MapaImoveisResponse listarNoMapa(Double minLon, Double minLat, Double maxLon, Double maxLat,
+                                            FiltroImoveis filtro, int limite) {
         validarArea(minLon, minLat, maxLon, maxLat, limite);
+        validarSituacao(filtro);
 
         // Pede um a mais que o limite só para saber se a área tinha mais imóveis do que cabem
-        List<ImovelNoMapa> imoveis = consultaRepository.buscarNaArea(minLon, minLat, maxLon, maxLat, limite + 1);
+        List<ImovelNoMapa> imoveis = consultaRepository.buscarNaArea(minLon, minLat, maxLon, maxLat, filtro, limite + 1);
         boolean truncado = imoveis.size() > limite;
         if (truncado) {
             imoveis = imoveis.subList(0, limite);
@@ -113,6 +116,16 @@ public class ImovelRuralServiceImpl implements ImovelRuralService {
             features.add(Feature.de(propriedades(imovel), escritor.write(geometria)));
         }
         return MapaImoveisResponse.de(features, truncado, limite);
+    }
+
+    private static void validarSituacao(FiltroImoveis filtro) {
+        String situacao = filtro.situacao();
+        if (situacao != null && !situacao.isBlank()
+                && !FiltroImoveis.SITUACOES.contains(situacao.trim().toUpperCase())) {
+            throw new RequisicaoInvalidaException(
+                    "Situação inválida. Use: " + String.join(", ", FiltroImoveis.SITUACOES) + ".",
+                    List.of("situacao"));
+        }
     }
 
     private static void validarArea(Double minLon, Double minLat, Double maxLon, Double maxLat, int limite) {
