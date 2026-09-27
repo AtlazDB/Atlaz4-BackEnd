@@ -10,6 +10,7 @@ public record ImovelRuralResponse(
         String municipio,
         String estado,
         BigDecimal areaHa,
+        String situacao,
         Map<String, Object> geometria
 ) {
     public static ImovelRuralResponse de(ImovelRural imovel, Map<String, Object> geometria) {
@@ -18,6 +19,7 @@ public record ImovelRuralResponse(
                 imovel.getMunicipio(),
                 imovel.getEstado(),
                 imovel.getAreaHa(),
+                imovel.getSituacao(),
                 geometria
         );
     }

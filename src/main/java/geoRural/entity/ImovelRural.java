@@ -26,6 +26,9 @@ public class ImovelRural {
     @Column(name = "AREA_HA")
     private BigDecimal areaHa;
 
+    @Column(name = "SITUACAO")
+    private String situacao;
+
     @Column(name = "GEOMETRIA", columnDefinition = "SDO_GEOMETRY", nullable = false)
     private Geometry geometria;
 
@@ -55,6 +58,9 @@ public class ImovelRural {
 
     public BigDecimal getAreaHa() { return areaHa; }
     public void setAreaHa(BigDecimal areaHa) { this.areaHa = areaHa; }
+
+    public String getSituacao() { return situacao; }
+    public void setSituacao(String situacao) { this.situacao = situacao; }
 
     public Geometry getGeometria() { return geometria; }
     public void setGeometria(Geometry geometria) { this.geometria = geometria; }

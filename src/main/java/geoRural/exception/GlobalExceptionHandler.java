@@ -12,8 +12,8 @@ import org.springframework.web.multipart.support.MissingServletRequestPartExcept
 public class GlobalExceptionHandler {
 
     @ExceptionHandler(ImovelNaoEncontradoException.class)
-    public ResponseEntity<String> handleNaoEncontrado(ImovelNaoEncontradoException ex) {
-        return ResponseEntity.status(HttpStatus.NOT_FOUND).body(ex.getMessage());
+    public ResponseEntity<ErroResponse> handleNaoEncontrado(ImovelNaoEncontradoException ex) {
+        return ResponseEntity.status(HttpStatus.NOT_FOUND).body(ErroResponse.de(ex.getMessage()));
     }
 
     @ExceptionHandler(MunicipioNaoEncontradoException.class)
@@ -33,6 +33,11 @@ public class GlobalExceptionHandler {
 
     @ExceptionHandler(CargaNaoPermitidaException.class)
     public ResponseEntity<ErroResponse> handleCargaNaoPermitida(CargaNaoPermitidaException ex) {
+        return ResponseEntity.status(HttpStatus.CONFLICT).body(ErroResponse.de(ex.getMessage()));
+    }
+
+    @ExceptionHandler(ProcessamentoEmAndamentoException.class)
+    public ResponseEntity<ErroResponse> handleProcessamentoEmAndamento(ProcessamentoEmAndamentoException ex) {
         return ResponseEntity.status(HttpStatus.CONFLICT).body(ErroResponse.de(ex.getMessage()));
     }
 
@@ -59,6 +64,6 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(MaxUploadSizeExceededException.class)
     public ResponseEntity<ErroResponse> handleArquivoGrande(MaxUploadSizeExceededException ex) {
         return ResponseEntity.status(HttpStatus.PAYLOAD_TOO_LARGE)
-                .body(ErroResponse.de("Arquivo maior que o limite de 200 MB."));
+                .body(ErroResponse.de("Arquivo maior que o limite de 500 MB."));
     }
 }

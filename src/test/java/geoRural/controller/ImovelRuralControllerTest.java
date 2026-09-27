@@ -2,7 +2,11 @@ package geoRural.controller;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import geoRural.dto.ImovelResumoResponse;
+import geoRural.dto.MapaImoveisResponse;
+import geoRural.dto.PaginaResponse;
 import geoRural.entity.ImovelRural;
+import geoRural.exception.ImovelNaoEncontradoException;
 import geoRural.service.GeoJsonService;
 import geoRural.service.ImovelRuralService;
 import org.junit.jupiter.api.Test;
@@ -17,6 +21,7 @@ import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -28,7 +33,7 @@ class ImovelRuralControllerTest {
 
     /** O contrato da US03/US04. Nem a mais, nem a menos. */
     private static final List<String> CAMPOS_PUBLICOS =
-            List.of("codImovel", "municipio", "estado", "areaHa", "geometria");
+            List.of("codImovel", "municipio", "estado", "areaHa", "situacao", "geometria");
 
     @Autowired
     private MockMvc mockMvc;
@@ -90,6 +95,65 @@ class ImovelRuralControllerTest {
                 .andExpect(status().isOk());
 
         verify(service).listarTodos();
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void paginaDevolveItensSemGeometria() throws Exception {
+        var item = new ImovelResumoResponse("PR-1", "Londrina", new BigDecimal("12.5"), "AT",
+                -51.2, -23.4, -51.1, -23.3);
+        when(service.listarPagina(eq("londrina"), eq(null), eq(2), eq(10)))
+                .thenReturn(new PaginaResponse<>(List.of(item), 11, 2, 10));
+
+        String corpo = mockMvc.perform(get("/api/v1/imoveis/pagina?pagina=2&tamanho=10&municipio=londrina"))
+                .andExpect(status().isOk())
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+
+        Map<String, Object> resposta = MAPPER.readValue(corpo, new TypeReference<>() {});
+        assertThat(resposta.keySet()).containsExactlyInAnyOrder("itens", "total", "pagina", "tamanho");
+
+        Map<String, Object> primeiro = ((List<Map<String, Object>>) resposta.get("itens")).get(0);
+        assertThat(primeiro.keySet()).containsExactlyInAnyOrder("codImovel", "municipio", "areaHa",
+                "situacao", "minLon", "minLat", "maxLon", "maxLat");
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void mapaDevolveFeatureCollectionComGeometriaComoObjeto() throws Exception {
+        var feature = MapaImoveisResponse.Feature.de(Map.of("codImovel", "PR-1"),
+                "{\"type\":\"Polygon\",\"coordinates\":[[[-51.2,-23.4],[-51.1,-23.4],[-51.1,-23.3],[-51.2,-23.4]]]}");
+        when(service.listarNoMapa(-51.3, -23.5, -51.0, -23.2, 1000))
+                .thenReturn(MapaImoveisResponse.de(List.of(feature), false, 1000));
+
+        String corpo = mockMvc.perform(get("/api/v1/imoveis/mapa?minLon=-51.3&minLat=-23.5&maxLon=-51.0&maxLat=-23.2"))
+                .andExpect(status().isOk())
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+
+        Map<String, Object> resposta = MAPPER.readValue(corpo, new TypeReference<>() {});
+        assertThat(resposta.get("type")).isEqualTo("FeatureCollection");
+        assertThat(resposta.get("truncado")).isEqualTo(false);
+        Map<String, Object> primeira = ((List<Map<String, Object>>) resposta.get("features")).get(0);
+        assertThat(primeira.get("type")).isEqualTo("Feature");
+        // Precisa sair como objeto GeoJSON, não como texto entre aspas
+        assertThat((Map<String, Object>) primeira.get("geometry")).containsEntry("type", "Polygon");
+    }
+
+    @Test
+    void imovelInexistenteRespondeErroResponse() throws Exception {
+        when(service.buscarPorCodImovel("X")).thenThrow(new ImovelNaoEncontradoException("X"));
+
+        String corpo = mockMvc.perform(get("/api/v1/imoveis/X"))
+                .andExpect(status().isNotFound())
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+
+        Map<String, Object> resposta = MAPPER.readValue(corpo, new TypeReference<>() {});
+        assertThat(resposta).containsKey("mensagem");
     }
 
     private static ImovelRural imovelDeTeste() {
