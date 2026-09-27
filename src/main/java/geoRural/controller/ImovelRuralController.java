@@ -1,6 +1,9 @@
 package geoRural.controller;
 
+import geoRural.dto.ImovelResumoResponse;
 import geoRural.dto.ImovelRuralResponse;
+import geoRural.dto.MapaImoveisResponse;
+import geoRural.dto.PaginaResponse;
 import geoRural.entity.ImovelRural;
 import geoRural.service.GeoJsonService;
 import geoRural.service.ImovelRuralService;
@@ -45,6 +48,32 @@ public class ImovelRuralController {
         return imoveis.stream()
                 .map(this::toResponse)
                 .toList();
+    }
+
+    /** Tabela: página sem geometria, com a caixa envolvente de cada imóvel para o front dar zoom. */
+    @GetMapping("/pagina")
+    public PaginaResponse<ImovelResumoResponse> listarPagina(
+            @RequestParam(defaultValue = "1") int pagina,
+            @RequestParam(defaultValue = "50") int tamanho,
+            @RequestParam(required = false) String municipio,
+            @RequestParam(required = false) String codImovel) {
+
+        return service.listarPagina(municipio, codImovel, pagina, tamanho);
+    }
+
+    /**
+     * Mapa (Leaflet): imóveis da área visível, em GeoJSON. O front chama de novo a cada movimento
+     * do mapa, passando a caixa da tela. Com {@code truncado: true}, pedir para aproximar o zoom.
+     */
+    @GetMapping("/mapa")
+    public MapaImoveisResponse mapa(
+            @RequestParam(required = false) Double minLon,
+            @RequestParam(required = false) Double minLat,
+            @RequestParam(required = false) Double maxLon,
+            @RequestParam(required = false) Double maxLat,
+            @RequestParam(defaultValue = "1000") int limite) {
+
+        return service.listarNoMapa(minLon, minLat, maxLon, maxLat, limite);
     }
 
     @GetMapping("/{codImovel}")
