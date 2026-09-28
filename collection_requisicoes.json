@@ -1,0 +1,174 @@
+{
+  "info": {
+    "_postman_id": "409f8efe-95f4-4a9a-8929-a8854750b521",
+    "name": "GeoRural - API",
+    "description": "### Welcome to Postman! This is your first collection. \n\nCollections are your starting point for building and testing APIs. You can use this one to:\n\n• Group related requests\n• Test your API in real-world scenarios\n• Document and share your requests\n\nUpdate the name and overview whenever you’re ready to make it yours.\n\n[Learn more about Postman Collections.](https://learning.postman.com/docs/collections/collections-overview/)",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "_exporter_id": "53566510",
+    "_collection_link": "https://go.postman.co/collection/53566510-409f8efe-95f4-4a9a-8929-a8854750b521?source=collection_link"
+  },
+  "item": [
+    {
+      "name": "Listar Fontes (GET)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "http://localhost:8080/api/v1/fontes?busca=IBGE",
+          "protocol": "http",
+          "host": [
+            "localhost"
+          ],
+          "port": "8080",
+          "path": [
+            "api",
+            "v1",
+            "fontes"
+          ],
+          "query": [
+            {
+              "key": "busca",
+              "value": "IBGE"
+            }
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "Listar Imóveis (GET)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": ""
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "Buscar Imóvel por Codigo (GET)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "http://localhost:8080/api/v1/imoveis/TESTE-001",
+          "protocol": "http",
+          "host": [
+            "localhost"
+          ],
+          "port": "8080",
+          "path": [
+            "api",
+            "v1",
+            "imoveis",
+            "TESTE-001"
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "Cadastrar Fonte (POST)",
+      "request": {
+        "method": "POST",
+        "header": [],
+        "body": {
+          "mode": "raw",
+          "raw": "{\r\n        \"id\": 10,\r\n        \"nome\": \"Fonte Nova\",\r\n        \"sigla\": \"NOVA\",\r\n        \"orgao\": \"Instituto Brasileiro de TESTE\",\r\n        \"formato\": \"GeoJSON\",\r\n        \"periodicidade\": \"anual\",\r\n        \"status\": \"ativa\",\r\n        \"criadaEm\": \"2026-09-23T01:08:07.947477Z\",\r\n        \"arquivos\": []\r\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "http://localhost:8080/api/v1/fontes",
+          "protocol": "http",
+          "host": [
+            "localhost"
+          ],
+          "port": "8080",
+          "path": [
+            "api",
+            "v1",
+            "fontes"
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "Carregar Pipeline (POST)",
+      "request": {
+        "method": "POST",
+        "header": [],
+        "body": {
+          "mode": "raw",
+          "raw": "{\r\n        \"codImovel\": \"TESTE-002\",\r\n        \"municipio\": \"Mirassol\",\r\n        \"estado\": \"PR\",\r\n        \"areaHa\": 100.5,\r\n        \"geometria\": {\r\n            \"type\": \"Polygon\",\r\n            \"coordinates\": [\r\n                [\r\n                    [\r\n                        -55.17,\r\n                        -25.51\r\n                    ],\r\n                    [\r\n                        -55.56,\r\n                        -23.31\r\n                    ],\r\n                    [\r\n                        -55.16,\r\n                        -23.55\r\n                    ],\r\n                    [\r\n                        -51.17,\r\n                        -23.3\r\n                    ],\r\n                    [\r\n                        -55.17,\r\n                        -23.51\r\n                    ]\r\n                ]\r\n            ],\r\n            \"crs\": {\r\n                \"type\": \"name\",\r\n                \"properties\": {\r\n                    \"name\": \"EPSG:4326\"\r\n                }\r\n            }\r\n        }\r\n    }",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "http://localhost:8080/api/v1/pipeline/carga?arquivoBrutoId=1",
+          "protocol": "http",
+          "host": [
+            "localhost"
+          ],
+          "port": "8080",
+          "path": [
+            "api",
+            "v1",
+            "pipeline",
+            "carga"
+          ],
+          "query": [
+            {
+              "key": "arquivoBrutoId",
+              "value": "1"
+            }
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "Upload de Arquivos (POST)",
+      "request": {
+        "method": "POST",
+        "header": [],
+        "body": {
+          "mode": "formdata",
+          "formdata": [
+            {
+              "key": "arquivo",
+              "type": "file",
+              "src": [
+                "/C:/Users/Rod Rodrigues/Downloads/annual-enterprise-survey-2025-financial-year-provisional-size-bands.csv"
+              ]
+            }
+          ]
+        },
+        "url": {
+          "raw": "http://localhost:8080/api/v1/fontes/21/arquivos",
+          "protocol": "http",
+          "host": [
+            "localhost"
+          ],
+          "port": "8080",
+          "path": [
+            "api",
+            "v1",
+            "fontes",
+            "21",
+            "arquivos"
+          ]
+        }
+      },
+      "response": []
+    }
+  ]
+}
