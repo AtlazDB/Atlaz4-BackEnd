@@ -90,6 +90,8 @@ CREATE TABLE fonte_coluna (
   CONSTRAINT pk_fonte_coluna   PRIMARY KEY (id),
   CONSTRAINT fk_fcol_fonte     FOREIGN KEY (fonte_id) REFERENCES fonte (id),
   CONSTRAINT uk_fcol           UNIQUE (fonte_id, nome_coluna),
+  -- alvo da FK composta de regra_campo: garante que a coluna pertence à fonte
+  CONSTRAINT uk_fcol_id_fonte  UNIQUE (id, fonte_id),
   CONSTRAINT ck_fcol_exemplos  CHECK (exemplos IS JSON),
   CONSTRAINT ck_fcol_presente  CHECK (presente_ultimo_arquivo IN (0,1))
 );
@@ -130,7 +132,9 @@ CREATE TABLE regra_campo (
 
   CONSTRAINT pk_regra_campo    PRIMARY KEY (id),
   CONSTRAINT fk_regra_fonte    FOREIGN KEY (fonte_id)        REFERENCES fonte (id),
-  CONSTRAINT fk_regra_fcol     FOREIGN KEY (fonte_coluna_id) REFERENCES fonte_coluna (id),
+  -- FK composta: a coluna de origem precisa ser DA MESMA fonte da regra
+  CONSTRAINT fk_regra_fcol     FOREIGN KEY (fonte_coluna_id, fonte_id)
+                               REFERENCES fonte_coluna (id, fonte_id),
   CONSTRAINT fk_regra_dominio  FOREIGN KEY (dominio_id)      REFERENCES dominio (id),
 
   -- uma coluna de origem é mapeada uma vez; um campo de destino recebe uma
@@ -164,6 +168,9 @@ CREATE TABLE regra_campo (
 --------------------------------------------------------------------------------
 
 CREATE INDEX ix_regra_dominio ON regra_campo (dominio_id);
+
+-- Índice da FK composta fk_regra_fcol (colunas na mesma ordem da FK).
+CREATE INDEX ix_regra_fcol_fonte ON regra_campo (fonte_coluna_id, fonte_id);
 
 
 --------------------------------------------------------------------------------
