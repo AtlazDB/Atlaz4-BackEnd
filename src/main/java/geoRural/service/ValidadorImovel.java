@@ -47,18 +47,30 @@ public class ValidadorImovel {
             return quarentena(imovel, "sem geometria");
         }
 
-        // copy() para não alterar a geometria do ImovelLido (normalize() muda o objeto no lugar)
-        g = g.isValid() ? g.copy() : GeometryFixer.fix(g);
-        if (g.isEmpty() || !g.isValid() || !(g instanceof Polygon || g instanceof MultiPolygon)) {
+        g = prepararGeometria(g);
+        if (g == null) {
             return quarentena(imovel, "geometria irreparável");
+        }
+
+        return new Resultado(imovel, g, null);
+    }
+
+    /**
+     * Corrige a geometria, deixa os anéis no sentido do Oracle e marca o SRID. Devolve null se
+     * não sobrar um polígono válido. Também usada na Reserva Legal, que vem do mesmo SICAR.
+     */
+    static Geometry prepararGeometria(Geometry original) {
+        // copy() para não alterar a geometria de quem chamou (normalize() muda o objeto no lugar)
+        Geometry g = original.isValid() ? original.copy() : GeometryFixer.fix(original);
+        if (g.isEmpty() || !g.isValid() || !(g instanceof Polygon || g instanceof MultiPolygon)) {
+            return null;
         }
 
         // Mesma lição da V6: o Oracle exige anel externo anti-horário e o shapefile guarda horário.
         g.normalize();   // JTS: anel externo horário, buracos anti-horário
         g = g.reverse(); // inverte → anel externo anti-horário, como o Oracle espera
         g.setSRID(SRID);
-
-        return new Resultado(imovel, g, null);
+        return g;
     }
 
     private static Resultado quarentena(ImovelLido imovel, String motivo) {

@@ -90,13 +90,18 @@ public class GravadorImoveis {
 
     /** Cria a próxima versão do conjunto na zona TRATADA (ainda sem arquivo no bucket, por isso sem chave_objeto). */
     public VersaoCriada criarVersao(long execucaoId) {
+        return criarVersao(execucaoId, CONJUNTO);
+    }
+
+    /** Mesma coisa para outro conjunto (reserva_legal, focos_calor), que usa o mesmo processamento. */
+    public VersaoCriada criarVersao(long execucaoId, String conjunto) {
         Integer versao = jdbc.queryForObject(
                 "SELECT NVL(MAX(versao), 0) + 1 FROM dataset_versao WHERE conjunto = ?",
-                Integer.class, CONJUNTO);
+                Integer.class, conjunto);
         long id = inserirComId("""
                 INSERT INTO dataset_versao (conjunto, versao, execucao_id, zona)
                 VALUES (?, ?, ?, 'TRATADA')
-                """, CONJUNTO, versao, execucaoId);
+                """, conjunto, versao, execucaoId);
         return new VersaoCriada(id, versao);
     }
 
@@ -129,7 +134,7 @@ public class GravadorImoveis {
         jdbc.batchUpdate(SQL_QUARENTENA, reprovados, reprovados.size(), (PreparedStatement ps, Resultado r) -> {
             ps.setLong(1, execucaoId);
             ps.setInt(2, r.imovel().linha());
-            ps.setString(3, r.motivoQuarentena().startsWith("cod_imovel") ? "cod_imovel" : "geometria");
+            ps.setString(3, campo(r.motivoQuarentena()));
             ps.setString(4, r.motivoQuarentena());
             ps.setString(5, json(r));
         });
@@ -147,6 +152,11 @@ public class GravadorImoveis {
                 UPDATE arquivo_bruto SET status = 'PROCESSADO', processado_em = SYSTIMESTAMP
                  WHERE id = ?
                 """, arquivoId);
+    }
+
+    /** Para conjuntos que acumulam (focos): a versão registra só o que trouxe de novo. */
+    public void atualizarRegistrosDaVersao(long datasetVersaoId, int registros) {
+        jdbc.update("UPDATE dataset_versao SET registros = ? WHERE id = ?", registros, datasetVersaoId);
     }
 
     public void falhar(long arquivoId, Long execucaoId, String mensagem) {
@@ -177,6 +187,17 @@ public class GravadorImoveis {
             return ps;
         }, chave);
         return chave.getKey().longValue();
+    }
+
+    /** Campo da quarentena pelo começo do motivo: "num_area vazio" → area_ha. */
+    static String campo(String motivo) {
+        if (motivo.startsWith("cod_imovel")) {
+            return "cod_imovel";
+        }
+        if (motivo.startsWith("num_area")) {
+            return "area_ha";
+        }
+        return "geometria";
     }
 
     /** UF pelo prefixo do código do CAR: "PR-4113700-..." → "PR". */
