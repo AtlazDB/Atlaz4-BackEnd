@@ -52,23 +52,35 @@ public class ValidadorImovel {
             return quarentena(imovel, "sem geometria");
         }
 
-        if (!(g instanceof Polygon || g instanceof MultiPolygon)) {
-            return quarentena(imovel, "geometria não é polígono: " + g.getGeometryType());
-        }
-        TopologyValidationError erro = new IsValidOp(g).getValidationError();
-        if (erro != null) {
-            return quarentena(imovel, "geometria inválida: " + descrever(erro));
+        String problema = problemaNaGeometria(g);
+        if (problema != null) {
+            return quarentena(imovel, problema);
         }
 
-        // copy() para não alterar a geometria do ImovelLido (normalize() muda o objeto no lugar)
-        g = g.copy();
+        return new Resultado(imovel, prepararGeometria(g), null);
+    }
+
+    static String problemaNaGeometria(Geometry g) {
+        if (!(g instanceof Polygon || g instanceof MultiPolygon)) {
+            return "geometria não é polígono: " + g.getGeometryType();
+        }
+        TopologyValidationError erro = new IsValidOp(g).getValidationError();
+        return erro == null ? null : "geometria inválida: " + descrever(erro);
+    }
+
+    
+    static Geometry prepararGeometria(Geometry original) {
+        if (original == null || original.isEmpty() || problemaNaGeometria(original) != null) {
+            return null;
+        }
+        // copy() para não alterar a geometria de quem chamou (normalize() muda o objeto no lugar)
+        Geometry g = original.copy();
 
         // Mesma lição da V6: o Oracle exige anel externo anti-horário e o shapefile guarda horário.
         g.normalize();   // JTS: anel externo horário, buracos anti-horário
         g = g.reverse(); // inverte → anel externo anti-horário, como o Oracle espera
         g.setSRID(SRID);
-
-        return new Resultado(imovel, g, null);
+        return g;
     }
 
     private static Resultado quarentena(ImovelLido imovel, String motivo) {
