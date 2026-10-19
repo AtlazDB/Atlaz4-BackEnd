@@ -2,7 +2,7 @@ package geoRural.quality;
 
 // Contra o Oracle do docker-compose. Precisa da V9 e da V11 aplicadas à mão (o Flyway fica
 // desligado: aplicaria a V11 antes da V8–V10). Cada teste é desfeito no fim (@DataJpaTest),
-// por isso o pkg_qualidade.validar não pode dar COMMIT.
+// por isso o pkg_quality.validate não pode dar COMMIT.
 // Os tipos de erro (OBRIGATORIO, TIPO...) são provisórios até a V10 trazer os 13 códigos.
 
 import org.junit.jupiter.api.BeforeEach;
@@ -25,7 +25,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 })
 class PkgQualityTest {
 
-    private static final String ARQUIVO = "teste/pkg_qualidade/imoveis.zip";
+    private static final String ARQUIVO = "teste/pkg_quality/imoveis.zip";
     private static final String CAMADA = "imoveis.shp";
 
     @Autowired
@@ -37,7 +37,7 @@ class PkgQualityTest {
     void montarCenario() {
         jdbc.update("""
                 INSERT INTO fonte (nome, sigla, orgao, formato)
-                VALUES ('Fonte de teste do pkg_qualidade', 'TESTE', 'Teste', 'CSV')""");
+                VALUES ('Fonte de teste do pkg_quality', 'TESTE', 'Teste', 'CSV')""");
 
         jdbc.update("INSERT INTO dominio (codigo, nome) VALUES ('TESTE_SITUACAO', 'Situação (teste)')");
         valorDominio("ATIVO");
@@ -153,6 +153,21 @@ class PkgQualityTest {
         assertThat(status("outra.shp", 1)).isEqualTo("APROVADO");
     }
 
+    /** A DAG e a quarentena acham o registro pela chave natural, então ela vai também nas reprovadas. */
+    @Test
+    void preencheChaveNaturalInclusiveNaLinhaReprovada() {
+        linha(CAMADA, 1, """
+                {"cod_imovel": "PR-001", "area_ha": "12.5", "situacao": "ATIVO"}""");
+        linha(CAMADA, 2, """
+                {"cod_imovel": "PR-002", "area_ha": "8.0", "situacao": "XPTO"}""");
+
+        validar();
+
+        assertThat(status(CAMADA, 2)).isEqualTo("REPROVADO");
+        assertThat(chaveNatural(CAMADA, 1)).isEqualTo("PR-001");
+        assertThat(chaveNatural(CAMADA, 2)).isEqualTo("PR-002");
+    }
+
     // ----- montagem do cenário ------------------------------------------------
 
     private void valorDominio(String valor) {
@@ -190,12 +205,19 @@ class PkgQualityTest {
     // ----- execução e conferência -----------------------------------------------
 
     private void validar() {
-        jdbc.update("BEGIN pkg_qualidade.validar(?); END;", execucaoId);
+        jdbc.update("BEGIN pkg_quality.validate(?); END;", execucaoId);
     }
 
     private String status(String camada, int numero) {
         return jdbc.queryForObject("""
                 SELECT status FROM staging_registro
+                 WHERE execucao_id = ? AND camada = ? AND numero_linha = ?""",
+                String.class, execucaoId, camada, numero);
+    }
+
+    private String chaveNatural(String camada, int numero) {
+        return jdbc.queryForObject("""
+                SELECT chave_natural FROM staging_registro
                  WHERE execucao_id = ? AND camada = ? AND numero_linha = ?""",
                 String.class, execucaoId, camada, numero);
     }
