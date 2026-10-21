@@ -16,6 +16,7 @@ import org.springframework.test.context.TestPropertySource;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 @DataJpaTest
 @AutoConfigureTestDatabase(replace = AutoConfigureTestDatabase.Replace.NONE)
@@ -168,6 +169,42 @@ class PkgQualityTest {
         assertThat(chaveNatural(CAMADA, 2)).isEqualTo("PR-002");
     }
 
+    /** Sem a malha do PR, todo imóvel cairia como fora do PR: a execução falha em vez disso. */
+    @Test
+    void semMunicipioDoPrFalhaAExecucao() {
+        regraGeometria();
+        semMunicipioDoPr();
+        linha(CAMADA, 1, """
+                {"cod_imovel": "PR-001", "area_ha": "12.5", "situacao": "ATIVO"}""");
+
+        assertThatThrownBy(this::validar)
+                .hasMessageContaining("ORA-20001")
+                .hasMessageContaining("malha do IBGE");
+    }
+
+    /** A trava só vale para fonte com coluna de geometria. */
+    @Test
+    void semRegraDeGeometriaNaoPrecisaDeMunicipio() {
+        semMunicipioDoPr();
+        linha(CAMADA, 1, """
+                {"cod_imovel": "PR-001", "area_ha": "12.5", "situacao": "ATIVO"}""");
+
+        validar();
+
+        assertThat(status(CAMADA, 1)).isEqualTo("APROVADO");
+    }
+
+    @Test
+    void comMunicipioDoPrValidaNormalmente() {
+        regraGeometria();
+        linha(CAMADA, 1, """
+                {"cod_imovel": "PR-001", "area_ha": "12.5", "situacao": "ATIVO"}""");
+
+        validar();
+
+        assertThat(status(CAMADA, 1)).isEqualTo("APROVADO");
+    }
+
     // ----- montagem do cenário ------------------------------------------------
 
     private void valorDominio(String valor) {
@@ -194,6 +231,26 @@ class PkgQualityTest {
                   JOIN fonte_coluna fc ON fc.fonte_id = f.id AND fc.nome_coluna = ?
                  WHERE f.sigla = 'TESTE'""",
                 coluna, tipo, obrigatorio, chave, dominio, coluna);
+    }
+
+    /** Coluna de geometria opcional (a V9 exige política quando o tipo é GEOMETRIA). */
+    private void regraGeometria() {
+        coluna("geometria");
+        jdbc.update("""
+                INSERT INTO regra_campo
+                  (fonte_id, fonte_coluna_id, destino_tabela, campo_destino, tipo_dado, politica_geometria)
+                SELECT f.id, fc.id, 'imovel_rural', 'geometria', 'GEOMETRIA', 'QUARENTENA'
+                  FROM fonte f
+                  JOIN fonte_coluna fc ON fc.fonte_id = f.id AND fc.nome_coluna = 'geometria'
+                 WHERE f.sigla = 'TESTE'""");
+    }
+
+    /**
+     * Tira o PR da municipio só dentro do teste (o rollback desfaz). UPDATE em vez de
+     * DELETE porque o imóvel TESTE-001 da V5 aponta para Londrina.
+     */
+    private void semMunicipioDoPr() {
+        jdbc.update("UPDATE municipio SET estado = 'SP' WHERE estado = 'PR'");
     }
 
     private void linha(String camada, int numero, String atributosJson) {

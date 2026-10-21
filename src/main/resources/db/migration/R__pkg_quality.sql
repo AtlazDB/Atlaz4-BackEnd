@@ -3,6 +3,8 @@ CREATE OR REPLACE PACKAGE pkg_quality AS
   -- (regra_campo). Grava um erro por regra que falhou em staging_erro e marca
   -- cada linha como APROVADO ou REPROVADO. Não dá COMMIT: quem controla a
   -- transação é a DAG.
+  -- ORA-20001: a fonte tem coluna de geometria e a malha municipal do PR
+  -- ainda não foi carregada.
   PROCEDURE validate(p_execucao_id IN NUMBER);
 END pkg_quality;
 /
@@ -17,7 +19,9 @@ CREATE OR REPLACE PACKAGE BODY pkg_quality AS
   END json_path;
 
   PROCEDURE validate(p_execucao_id IN NUMBER) IS
-    v_fonte_id NUMBER;
+    v_fonte_id       NUMBER;
+    v_has_geometry   NUMBER;
+    v_has_pr_city    NUMBER;
   BEGIN
     -- Fonte da execução: é ela que diz quais regras valem.
     SELECT a.fonte_id
@@ -25,6 +29,29 @@ CREATE OR REPLACE PACKAGE BODY pkg_quality AS
       FROM execucao e
       JOIN arquivo_bruto a ON a.id = e.arquivo_bruto_id
      WHERE e.id = p_execucao_id;
+
+    -- Trava: "fora do PR" compara a geometria com a malha municipal do IBGE.
+    -- Sem nenhum município do PR carregado, todo imóvel seria reprovado e iria
+    -- para a quarentena; melhor falhar a execução e dizer o que falta.
+    SELECT COUNT(*)
+      INTO v_has_geometry
+      FROM regra_campo
+     WHERE fonte_id = v_fonte_id
+       AND tipo_dado = 'GEOMETRIA'
+       AND ROWNUM = 1;
+
+    IF v_has_geometry > 0 THEN
+      SELECT COUNT(*)
+        INTO v_has_pr_city
+        FROM municipio
+       WHERE estado = 'PR'
+         AND ROWNUM = 1;
+
+      IF v_has_pr_city = 0 THEN
+        RAISE_APPLICATION_ERROR(-20001,
+          'Nenhum município do PR na tabela municipio: carregue a malha do IBGE antes de validar.');
+      END IF;
+    END IF;
 
     -- Obrigatório: campo ausente, nulo ou só com espaços.
     FOR r IN (SELECT fc.nome_coluna
