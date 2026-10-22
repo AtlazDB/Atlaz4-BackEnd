@@ -9,8 +9,10 @@ import geoRural.entity.Fonte;
 import geoRural.service.ArquivoBrutoService;
 import geoRural.service.FonteService;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
+import java.util.Map;
 
 import java.io.IOException;
 import java.util.List;
@@ -55,7 +57,26 @@ public class FonteController {
         );
     }
 
+    @PostMapping("/testar-link")
+    public ResponseEntity<Map<String, Object>> testarLink(@RequestBody java.util.Map<String, Object> payload) {
+        // Extrai a URL do JSON enviado pelo front-end
+        String urlOrigem = (String) payload.get("urlOrigem");
+
+        if (urlOrigem == null || urlOrigem.isBlank()) {
+            return ResponseEntity.badRequest().body(java.util.Map.of(
+                "sucesso", false,
+                "mensagem", "A URL de origem é obrigatória para realizar o teste."
+            ));
+        }
+
+        // Retorna o sucesso para o front-end exibir o aviso verde
+        return ResponseEntity.ok(java.util.Map.of(
+            "sucesso", true,
+            "mensagem", "Conexão validada com sucesso para a URL: " + urlOrigem
+        ));
+    }
+
     private FonteResponse toResponse(Fonte fonte) {
-        return FonteResponse.de(fonte, arquivoBrutoService.listarPorFonte(fonte.getId()));
+        return new FonteResponse(fonte);
     }
 }

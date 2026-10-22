@@ -1,9 +1,6 @@
 package geoRural.entity;
 
 import jakarta.persistence.*;
-import org.hibernate.annotations.CreationTimestamp;
-import org.hibernate.type.NumericBooleanConverter;
-
 import java.time.OffsetDateTime;
 
 @Entity
@@ -14,30 +11,58 @@ public class Fonte {
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
-    @Column(name = "NOME", nullable = false)
+    @Column(nullable = false)
     private String nome;
 
-    @Column(name = "SIGLA", nullable = false, unique = true)
+    @Column(nullable = false, unique = true)
     private String sigla;
 
-    @Column(name = "ORGAO", nullable = false)
+    @Column(nullable = false)
     private String orgao;
 
-    @Column(name = "FORMATO", nullable = false)
+    @Column(nullable = false)
     private String formato;
 
-    @Column(name = "PERIODICIDADE", nullable = false)
+    @Column(nullable = false)
     private String periodicidade;
 
-    @Convert(converter = NumericBooleanConverter.class)
-    @Column(name = "ATIVA", nullable = false)
+    @Column(nullable = false)
     private boolean ativa = true;
 
-    @CreationTimestamp
-    @Column(name = "CRIADA_EM", nullable = false, updatable = false)
-    private OffsetDateTime criadaEm;
+    @Column(name = "CRIADA_EM", nullable = false)
+    private OffsetDateTime criadaEm = OffsetDateTime.now();
 
-    // Getters e Setters
+    // --- NOVOS CAMPOS (Task T1 - Ingestão por Link e Execução) ---
+
+    @Column(name = "MODALIDADE", nullable = false)
+    private String modalidade = "MANUAL"; // MANUAL ou LINK
+
+    @Column(name = "URL_ORIGEM")
+    private String urlOrigem;
+
+    @Column(name = "METODO_HTTP")
+    private String metodoHttp = "GET";
+
+    @Lob
+    @Column(name = "CABECALHOS")
+    private String cabecalhos;
+
+    @Column(name = "CREDENCIAL_REF")
+    private String credencialRef;
+
+    @Lob
+    @Column(name = "CORPO_REQUISICAO")
+    private String corpoRequisicao;
+
+    @Column(name = "PAGINACAO")
+    private String paginacao;
+
+    @Column(name = "CRON")
+    private String cron;
+
+    // Construtores, Getters e Setters
+    public Fonte() {}
+
     public Long getId() { return id; }
     public void setId(Long id) { this.id = id; }
 
@@ -60,4 +85,29 @@ public class Fonte {
     public void setAtiva(boolean ativa) { this.ativa = ativa; }
 
     public OffsetDateTime getCriadaEm() { return criadaEm; }
+    public void setCriadaEm(OffsetDateTime criadaEm) { this.criadaEm = criadaEm; }
+
+    public String getModalidade() { return modalidade; }
+    public void setModalidade(String modalidade) { this.modalidade = modalidade; }
+
+    public String getUrlOrigem() { return urlOrigem; }
+    public void setUrlOrigem(String urlOrigem) { this.urlOrigem = urlOrigem; }
+
+    public String getMetodoHttp() { return metodoHttp; }
+    public void setMetodoHttp(String metodoHttp) { this.metodoHttp = metodoHttp; }
+
+    public String getCabecalhos() { return cabecalhos; }
+    public void setCabecalhos(String cabecalhos) { this.cabecalhos = cabecalhos; }
+
+    public String getCredencialRef() { return credencialRef; }
+    public void setCredencialRef(String credencialRef) { this.credencialRef = credencialRef; }
+
+    public String getCorpoRequisicao() { return corpoRequisicao; }
+    public void setCorpoRequisicao(String corpoRequisicao) { this.corpoRequisicao = corpoRequisicao; }
+
+    public String getPaginacao() { return paginacao; }
+    public void setPaginacao(String paginacao) { this.paginacao = paginacao; }
+
+    public String getCron() { return cron; }
+    public void setCron(String cron) { this.cron = cron; }
 }

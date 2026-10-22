@@ -48,6 +48,16 @@ public class FonteServiceImpl implements FonteService {
         fonte.setFormato(request.formato().trim());
         fonte.setPeriodicidade(vazio(request.periodicidade()) ? "eventual" : request.periodicidade().trim());
 
+        // --- Novos campos mapeados (Task T1 - Ingestão por Link e Execução) ---
+        fonte.setModalidade(vazio(request.modalidade()) ? "MANUAL" : request.modalidade().trim().toUpperCase());
+        fonte.setUrlOrigem(request.urlOrigem() != null ? request.urlOrigem().trim() : null);
+        fonte.setMetodoHttp(vazio(request.metodoHttp()) ? "GET" : request.metodoHttp().trim().toUpperCase());
+        fonte.setCabecalhos(request.cabecalhos());
+        fonte.setCredencialRef(request.credencialRef() != null ? request.credencialRef().trim() : null);
+        fonte.setCorpoRequisicao(request.corpoRequisicao());
+        fonte.setPaginacao(request.paginacao() != null ? request.paginacao().trim() : null);
+        fonte.setCron(request.cron() != null ? request.cron().trim() : null);
+
         return repository.save(fonte);
     }
 
