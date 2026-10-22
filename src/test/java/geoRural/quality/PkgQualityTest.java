@@ -13,6 +13,7 @@ import org.springframework.boot.jdbc.test.autoconfigure.AutoConfigureTestDatabas
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.TestPropertySource;
 
+import java.nio.charset.StandardCharsets;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -264,7 +265,7 @@ class PkgQualityTest {
     /** Sem a malha do PR, todo imóvel cairia como fora do PR: a execução falha em vez disso. */
     @Test
     void semMunicipioDoPrFalhaAExecucao() {
-        regraGeometria();
+        regraGeometriaComRecortePr();
         semMunicipioDoPr();
         linha(CAMADA, 1, """
                 {"cod_imovel": "PR-001", "area_ha": "12.5", "situacao": "ATIVO"}""");
@@ -286,15 +287,147 @@ class PkgQualityTest {
         assertThat(status(CAMADA, 1)).isEqualTo("APROVADO");
     }
 
+    /** Sem recortar_pr a malha do PR não é usada, então não precisa estar carregada. */
+    @Test
+    void semRecortePrNaoPrecisaDeMunicipio() {
+        regraGeometria();
+        semMunicipioDoPr();
+        linhaComPoligono(CAMADA, 1, """
+                {"cod_imovel": "PR-001", "area_ha": "12.5", "situacao": "ATIVO"}""");
+
+        validar();
+
+        assertThat(status(CAMADA, 1)).isEqualTo("APROVADO");
+    }
+
     @Test
     void comMunicipioDoPrValidaNormalmente() {
-        regraGeometria();
+        regraGeometriaComRecortePr();
         linha(CAMADA, 1, """
                 {"cod_imovel": "PR-001", "area_ha": "12.5", "situacao": "ATIVO"}""");
 
         validar();
 
         assertThat(status(CAMADA, 1)).isEqualTo("APROVADO");
+    }
+
+    /** O WKB não traz SRID: o validate põe 4326 (a DAG já reprojeta). */
+    @Test
+    void wkbValidoViraGeometriaComSrid4326() {
+        regraGeometria();
+        linhaComPoligono(CAMADA, 1, """
+                {"cod_imovel": "PR-001", "area_ha": "12.5", "situacao": "ATIVO"}""");
+
+        validar();
+
+        assertThat(status(CAMADA, 1)).isEqualTo("APROVADO");
+        assertThat(sridDaGeometria(CAMADA, 1)).isEqualTo(4326);
+    }
+
+    /** Um WKB quebrado reprova só a linha dele, sem derrubar a validação. */
+    @Test
+    void wkbIlegivelReprova() {
+        regraGeometria();
+        linhaComWkb(CAMADA, 1, """
+                {"cod_imovel": "PR-001", "area_ha": "12.5", "situacao": "ATIVO"}""",
+                "lixo".getBytes(StandardCharsets.UTF_8));
+        linhaComPoligono(CAMADA, 2, """
+                {"cod_imovel": "PR-002", "area_ha": "8.0", "situacao": "ATIVO"}""");
+
+        validar();
+
+        assertThat(status(CAMADA, 1)).isEqualTo("REPROVADO");
+        assertThat(erros(CAMADA, 1)).containsExactly("GEOMETRIA_MALFORMADA");
+        assertThat(status(CAMADA, 2)).isEqualTo("APROVADO");
+    }
+
+    /** A geometria vem em geometria_wkb, não no JSON: o obrigatório dela olha lá. */
+    @Test
+    void geometriaObrigatoriaAusenteReprova() {
+        regraGeometria(1);
+        linha(CAMADA, 1, """
+                {"cod_imovel": "PR-001", "area_ha": "12.5", "situacao": "ATIVO"}""");
+        linhaComPoligono(CAMADA, 2, """
+                {"cod_imovel": "PR-002", "area_ha": "8.0", "situacao": "ATIVO"}""");
+
+        validar();
+
+        assertThat(status(CAMADA, 1)).isEqualTo("REPROVADO");
+        assertThat(erros(CAMADA, 1)).containsExactly("GEOMETRIA_NULA");
+        assertThat(status(CAMADA, 2)).isEqualTo("APROVADO");
+    }
+
+    /** Política QUARENTENA: geometria inválida reprova, sem tentar corrigir. */
+    @Test
+    void geometriaInvalidaComQuarentenaReprova() {
+        regraGeometria(0, "QUARENTENA");
+        linhaComPoligonoInvalido(CAMADA, 1, """
+                {"cod_imovel": "PR-001", "area_ha": "12.5", "situacao": "ATIVO"}""");
+
+        validar();
+
+        assertThat(status(CAMADA, 1)).isEqualTo("REPROVADO");
+        assertThat(erros(CAMADA, 1)).containsExactly("GEOMETRIA_INVALIDA");
+        assertThat(correcoes()).isZero();
+    }
+
+    /** Política CORRIGIR_E_REGISTRAR: corrige, guarda o antes e o depois e aprova. */
+    @Test
+    void geometriaInvalidaComCorrecaoEAprovadaERegistrada() {
+        regraGeometria(0, "CORRIGIR_E_REGISTRAR");
+        linhaComPoligonoInvalido(CAMADA, 1, """
+                {"cod_imovel": "PR-001", "area_ha": "12.5", "situacao": "ATIVO"}""");
+
+        validar();
+
+        assertThat(status(CAMADA, 1)).isEqualTo("APROVADO");
+        assertThat(erros(CAMADA, 1)).isEmpty();
+        assertThat(correcoes()).isEqualTo(1);
+        assertThat(chaveDaCorrecao()).isEqualTo("PR-001");
+        assertThat(validadeDaGeometria(CAMADA, 1)).isEqualTo("TRUE");
+    }
+
+    // O "PR" do banco local é o retângulo de Londrina da V5:
+    // longitude -51.30 a -51.05, latitude -23.45 a -23.20.
+
+    @Test
+    void dentroDoPrAprova() {
+        regraGeometriaComRecortePr();
+        linhaComPoligono(CAMADA, 1, """
+                {"cod_imovel": "PR-001", "area_ha": "12.5", "situacao": "ATIVO"}""");
+
+        validar();
+
+        assertThat(status(CAMADA, 1)).isEqualTo("APROVADO");
+        assertThat(erros(CAMADA, 1)).isEmpty();
+    }
+
+    /** Atravessa a borda leste de Londrina: aprova como veio, sem recorte. */
+    @Test
+    void parcialmenteForaDoPrAprova() {
+        regraGeometriaComRecortePr();
+        linhaComRetangulo(CAMADA, 1, """
+                {"cod_imovel": "PR-001", "area_ha": "12.5", "situacao": "ATIVO"}""",
+                -51.10, -23.35, -51.00, -23.30);
+
+        validar();
+
+        assertThat(status(CAMADA, 1)).isEqualTo("APROVADO");
+        assertThat(erros(CAMADA, 1)).isEmpty();
+    }
+
+    /** Em São Paulo, sem encostar no PR: reprova e vai para a quarentena. */
+    @Test
+    void totalmenteForaDoPrReprova() {
+        regraGeometriaComRecortePr();
+        linhaComRetangulo(CAMADA, 1, """
+                {"cod_imovel": "PR-001", "area_ha": "12.5", "situacao": "ATIVO"}""",
+                -46.70, -23.60, -46.65, -23.55);
+
+        validar();
+
+        assertThat(status(CAMADA, 1)).isEqualTo("REPROVADO");
+        assertThat(erros(CAMADA, 1)).containsExactly("FORA_DO_RECORTE_TERRITORIAL");
     }
 
     // ----- montagem do cenário ------------------------------------------------
@@ -325,16 +458,36 @@ class PkgQualityTest {
                 coluna, tipo, obrigatorio, chave, dominio, coluna);
     }
 
-    /** Coluna de geometria opcional (a V9 exige política quando o tipo é GEOMETRIA). */
+    /** Coluna de geometria opcional. */
     private void regraGeometria() {
+        regraGeometria(0);
+    }
+
+    /** Coluna de geometria com a política QUARENTENA, sem conferir o PR. */
+    private void regraGeometria(int obrigatorio) {
+        regraGeometria(obrigatorio, "QUARENTENA");
+    }
+
+    private void regraGeometria(int obrigatorio, String politica) {
+        regraGeometria(obrigatorio, politica, 0);
+    }
+
+    /** Coluna de geometria opcional que confere se está no PR (recortar_pr = 1). */
+    private void regraGeometriaComRecortePr() {
+        regraGeometria(0, "QUARENTENA", 1);
+    }
+
+    /** Coluna de geometria (a V9 exige política quando o tipo é GEOMETRIA). */
+    private void regraGeometria(int obrigatorio, String politica, int recortarPr) {
         coluna("geometria");
         jdbc.update("""
                 INSERT INTO regra_campo
-                  (fonte_id, fonte_coluna_id, destino_tabela, campo_destino, tipo_dado, politica_geometria)
-                SELECT f.id, fc.id, 'imovel_rural', 'geometria', 'GEOMETRIA', 'QUARENTENA'
+                  (fonte_id, fonte_coluna_id, destino_tabela, campo_destino, tipo_dado,
+                   obrigatorio, politica_geometria, recortar_pr)
+                SELECT f.id, fc.id, 'imovel_rural', 'geometria', 'GEOMETRIA', ?, ?, ?
                   FROM fonte f
                   JOIN fonte_coluna fc ON fc.fonte_id = f.id AND fc.nome_coluna = 'geometria'
-                 WHERE f.sigla = 'TESTE'""");
+                 WHERE f.sigla = 'TESTE'""", obrigatorio, politica, recortarPr);
     }
 
     /**
@@ -349,6 +502,49 @@ class PkgQualityTest {
         jdbc.update("""
                 INSERT INTO staging_registro (execucao_id, camada, numero_linha, atributos)
                 VALUES (?, ?, ?, ?)""", execucaoId, camada, numero, atributosJson);
+    }
+
+    /**
+     * Linha com um quadrado dentro do retângulo de Londrina (V5). O WKB é gerado pelo
+     * próprio Oracle, sem SRID, como o que a DAG grava.
+     */
+    private void linhaComPoligono(String camada, int numero, String atributosJson) {
+        jdbc.update("""
+                INSERT INTO staging_registro (execucao_id, camada, numero_linha, atributos, geometria_wkb)
+                VALUES (?, ?, ?, ?, SDO_UTIL.TO_WKBGEOMETRY(SDO_GEOMETRY(2003, NULL, NULL,
+                          SDO_ELEM_INFO_ARRAY(1, 1003, 1),
+                          SDO_ORDINATE_ARRAY(-51.20, -23.35, -51.15, -23.35, -51.15, -23.30,
+                                             -51.20, -23.30, -51.20, -23.35))))""",
+                execucaoId, camada, numero, atributosJson);
+    }
+
+    /** Linha com um retângulo qualquer (x = longitude, y = latitude), sem SRID no WKB. */
+    private void linhaComRetangulo(String camada, int numero, String atributosJson,
+                                   double xMin, double yMin, double xMax, double yMax) {
+        jdbc.update("""
+                INSERT INTO staging_registro (execucao_id, camada, numero_linha, atributos, geometria_wkb)
+                VALUES (?, ?, ?, ?, SDO_UTIL.TO_WKBGEOMETRY(SDO_GEOMETRY(2003, NULL, NULL,
+                          SDO_ELEM_INFO_ARRAY(1, 1003, 1),
+                          SDO_ORDINATE_ARRAY(?, ?, ?, ?, ?, ?, ?, ?, ?, ?))))""",
+                execucaoId, camada, numero, atributosJson,
+                xMin, yMin, xMax, yMin, xMax, yMax, xMin, yMax, xMin, yMin);
+    }
+
+    /** O mesmo quadrado, com um vértice repetido (erro 13356): inválido, mas corrigível. */
+    private void linhaComPoligonoInvalido(String camada, int numero, String atributosJson) {
+        jdbc.update("""
+                INSERT INTO staging_registro (execucao_id, camada, numero_linha, atributos, geometria_wkb)
+                VALUES (?, ?, ?, ?, SDO_UTIL.TO_WKBGEOMETRY(SDO_GEOMETRY(2003, NULL, NULL,
+                          SDO_ELEM_INFO_ARRAY(1, 1003, 1),
+                          SDO_ORDINATE_ARRAY(-51.20, -23.35, -51.15, -23.35, -51.15, -23.35,
+                                             -51.15, -23.30, -51.20, -23.30, -51.20, -23.35))))""",
+                execucaoId, camada, numero, atributosJson);
+    }
+
+    private void linhaComWkb(String camada, int numero, String atributosJson, byte[] wkb) {
+        jdbc.update("""
+                INSERT INTO staging_registro (execucao_id, camada, numero_linha, atributos, geometria_wkb)
+                VALUES (?, ?, ?, ?, ?)""", execucaoId, camada, numero, atributosJson, wkb);
     }
 
     // ----- execução e conferência -----------------------------------------------
@@ -368,6 +564,33 @@ class PkgQualityTest {
         return jdbc.queryForObject("""
                 SELECT chave_natural FROM staging_registro
                  WHERE execucao_id = ? AND camada = ? AND numero_linha = ?""",
+                String.class, execucaoId, camada, numero);
+    }
+
+    private Integer sridDaGeometria(String camada, int numero) {
+        return jdbc.queryForObject("""
+                SELECT s.geometria.sdo_srid FROM staging_registro s
+                 WHERE s.execucao_id = ? AND s.camada = ? AND s.numero_linha = ?""",
+                Integer.class, execucaoId, camada, numero);
+    }
+
+    private String chaveDaCorrecao() {
+        return jdbc.queryForObject(
+                "SELECT chave_natural FROM correcao_automatica WHERE execucao_id = ?",
+                String.class, execucaoId);
+    }
+
+    private int correcoes() {
+        return jdbc.queryForObject(
+                "SELECT COUNT(*) FROM correcao_automatica WHERE execucao_id = ?",
+                Integer.class, execucaoId);
+    }
+
+    private String validadeDaGeometria(String camada, int numero) {
+        return jdbc.queryForObject("""
+                SELECT SDO_GEOM.VALIDATE_GEOMETRY_WITH_CONTEXT(s.geometria, 0.05)
+                  FROM staging_registro s
+                 WHERE s.execucao_id = ? AND s.camada = ? AND s.numero_linha = ?""",
                 String.class, execucaoId, camada, numero);
     }
 

@@ -3,13 +3,22 @@ CREATE OR REPLACE PACKAGE pkg_quality AS
   -- (regra_campo). Grava um erro por regra que falhou em staging_erro e marca
   -- cada linha como APROVADO ou REPROVADO. Não dá COMMIT: quem controla a
   -- transação é a DAG.
-  -- ORA-20001: a fonte tem coluna de geometria e a malha municipal do PR
-  -- ainda não foi carregada.
+  -- ORA-20001: a fonte confere se a geometria está no PR (recortar_pr = 1) e
+  -- a malha municipal do PR ainda não foi carregada.
   PROCEDURE validate(p_execucao_id IN NUMBER);
+
+  -- Converte o WKB da staging para SDO_GEOMETRY com SRID 4326 (a DAG já
+  -- reprojeta; o WKB puro não traz o SRID). WKB vazio ou quebrado devolve NULL.
+  -- Pública porque o validate a chama dentro de um UPDATE.
+  FUNCTION to_geometry(p_wkb IN BLOB) RETURN SDO_GEOMETRY;
 END pkg_quality;
 /
 
 CREATE OR REPLACE PACKAGE BODY pkg_quality AS
+
+  -- Tolerância da validação e da correção, em metros (o SRID 4326 é geodésico).
+  -- Mesmo valor da V4.
+  c_tolerance CONSTANT NUMBER := 0.05;
 
   -- Máscara da DATA quando a regra não traz formato_origem (Rocha: DD/MM/YYYY).
   c_date_format CONSTANT VARCHAR2(30) := 'DD/MM/YYYY';
@@ -28,11 +37,42 @@ CREATE OR REPLACE PACKAGE BODY pkg_quality AS
     RETURN DBMS_ASSERT.ENQUOTE_LITERAL('$."' || p_column || '".type()');
   END json_type_path;
 
+  -- Um WKB ruim não pode derrubar o UPDATE de todas as linhas: devolve NULL e
+  -- o validate reprova só aquela linha.
+  FUNCTION to_geometry(p_wkb IN BLOB) RETURN SDO_GEOMETRY IS
+    v_geom SDO_GEOMETRY;
+  BEGIN
+    IF p_wkb IS NULL OR DBMS_LOB.GETLENGTH(p_wkb) = 0 THEN
+      RETURN NULL;
+    END IF;
+
+    v_geom := SDO_UTIL.FROM_WKBGEOMETRY(p_wkb);
+    v_geom.SDO_SRID := 4326;
+    RETURN v_geom;
+  EXCEPTION
+    WHEN OTHERS THEN
+      RETURN NULL;
+  END to_geometry;
+
+  -- O RECTIFY levanta exceção quando não consegue corrigir: devolve NULL e a
+  -- linha vai para a quarentena. Privada: só é chamada dentro do PL/SQL.
+  FUNCTION rectify(p_geom IN SDO_GEOMETRY) RETURN SDO_GEOMETRY IS
+  BEGIN
+    RETURN SDO_UTIL.RECTIFY_GEOMETRY(p_geom, c_tolerance);
+  EXCEPTION
+    WHEN OTHERS THEN
+      RETURN NULL;
+  END rectify;
+
   PROCEDURE validate(p_execucao_id IN NUMBER) IS
-    v_fonte_id       NUMBER;
-    v_has_geometry   NUMBER;
-    v_has_pr_city    NUMBER;
-    v_invalid        VARCHAR2(400);
+    v_fonte_id            NUMBER;
+    v_geometry_column     fonte_coluna.nome_coluna%TYPE;
+    v_geometry_required   NUMBER;
+    v_geometry_policy     regra_campo.politica_geometria%TYPE;
+    v_check_pr            regra_campo.recortar_pr%TYPE;
+    v_fixed               SDO_GEOMETRY;
+    v_has_pr_city         NUMBER;
+    v_invalid             VARCHAR2(400);
   BEGIN
     -- Fonte da execução: é ela que diz quais regras valem.
     SELECT a.fonte_id
@@ -41,17 +81,26 @@ CREATE OR REPLACE PACKAGE BODY pkg_quality AS
       JOIN arquivo_bruto a ON a.id = e.arquivo_bruto_id
      WHERE e.id = p_execucao_id;
 
+    -- Coluna de geometria da fonte, se houver. Uma só: a staging guarda uma
+    -- geometria por linha (geometria_wkb).
+    BEGIN
+      SELECT fc.nome_coluna, rc.obrigatorio, rc.politica_geometria, rc.recortar_pr
+        INTO v_geometry_column, v_geometry_required, v_geometry_policy, v_check_pr
+        FROM regra_campo rc
+        JOIN fonte_coluna fc ON fc.id = rc.fonte_coluna_id
+       WHERE rc.fonte_id = v_fonte_id
+         AND rc.tipo_dado = 'GEOMETRIA'
+         AND ROWNUM = 1;
+    EXCEPTION
+      WHEN NO_DATA_FOUND THEN
+        v_geometry_column := NULL;
+    END;
+
     -- Trava: "fora do PR" compara a geometria com a malha municipal do IBGE.
     -- Sem nenhum município do PR carregado, todo imóvel seria reprovado e iria
-    -- para a quarentena; melhor falhar a execução e dizer o que falta.
-    SELECT COUNT(*)
-      INTO v_has_geometry
-      FROM regra_campo
-     WHERE fonte_id = v_fonte_id
-       AND tipo_dado = 'GEOMETRIA'
-       AND ROWNUM = 1;
-
-    IF v_has_geometry > 0 THEN
+    -- para a quarentena; melhor falhar a execução e dizer o que falta. Só vale
+    -- quando a regra confere o PR (recortar_pr = 1).
+    IF v_check_pr = 1 THEN
       SELECT COUNT(*)
         INTO v_has_pr_city
         FROM municipio
@@ -68,11 +117,14 @@ CREATE OR REPLACE PACKAGE BODY pkg_quality AS
     --   CAMPO_OBRIGATORIO_AUSENTE: a chave não veio no JSON ou veio null;
     --   CAMPO_EM_BRANCO: veio, mas vazia, só com espaços ou com um falso nulo
     --   (NULL, N/A, -).
+    -- A geometria não está no JSON (vem em geometria_wkb): o obrigatório dela
+    -- fica no bloco da geometria (GEOMETRIA_NULA).
     FOR r IN (SELECT fc.nome_coluna
                 FROM regra_campo rc
                 JOIN fonte_coluna fc ON fc.id = rc.fonte_coluna_id
                WHERE rc.fonte_id = v_fonte_id
-                 AND rc.obrigatorio = 1) LOOP
+                 AND rc.obrigatorio = 1
+                 AND rc.tipo_dado <> 'GEOMETRIA') LOOP
       EXECUTE IMMEDIATE
         'INSERT INTO staging_erro (staging_id, tipo_erro, campo, motivo, valor_recebido)
          SELECT x.id,
@@ -132,31 +184,10 @@ CREATE OR REPLACE PACKAGE BODY pkg_quality AS
         USING r.nome_coluna, 'Valor não converte para ' || r.tipo_dado || '.', p_execucao_id;
     END LOOP;
 
-    -- Domínio: valor informado que não está na lista (ativa) do domínio.
-    -- Vazio não entra aqui: isso é com o obrigatório.
-    FOR r IN (SELECT fc.nome_coluna, rc.dominio_id
-                FROM regra_campo rc
-                JOIN fonte_coluna fc ON fc.id = rc.fonte_coluna_id
-               WHERE rc.fonte_id = v_fonte_id
-                 AND rc.dominio_id IS NOT NULL) LOOP
-      EXECUTE IMMEDIATE
-        'INSERT INTO staging_erro (staging_id, tipo_erro, campo, motivo, valor_recebido)
-         SELECT x.id, ''VALOR_FORA_DO_DOMINIO'', :campo, ''Valor fora da lista permitida.'', SUBSTR(x.valor, 1, 1000)
-           FROM (SELECT s.id, TRIM(JSON_VALUE(s.atributos, ' || json_path(r.nome_coluna) || ')) valor
-                   FROM staging_registro s
-                  WHERE s.execucao_id = :execucao) x
-          WHERE x.valor IS NOT NULL
-            AND NOT EXISTS (SELECT 1
-                              FROM dominio_valor dv
-                             WHERE dv.dominio_id = :dominio
-                               AND dv.ativo = 1
-                               AND dv.valor = x.valor)'
-        USING r.nome_coluna, p_execucao_id, r.dominio_id;
-    END LOOP;
-
     -- Chave duplicada: o mesmo valor de chave em mais de uma linha da execução.
     -- Reprova todas as repetidas (não dá para saber qual está certa).
     -- Supõe chave de uma coluna só: confirmar com o Rocha.
+    -- Vem antes da geometria: a correcao_automatica grava a chave_natural.
     FOR r IN (SELECT fc.nome_coluna
                 FROM regra_campo rc
                 JOIN fonte_coluna fc ON fc.id = rc.fonte_coluna_id
@@ -181,6 +212,108 @@ CREATE OR REPLACE PACKAGE BODY pkg_quality AS
             SET s.chave_natural = SUBSTR(TRIM(JSON_VALUE(s.atributos, ' || json_path(r.nome_coluna) || ')), 1, 80)
           WHERE s.execucao_id = :execucao'
         USING p_execucao_id;
+    END LOOP;
+
+    -- Geometria: converte o WKB e grava em staging_registro.geometria, que é a
+    -- que a DAG usa no MERGE. A original continua em geometria_wkb.
+    IF v_geometry_column IS NOT NULL THEN
+      UPDATE staging_registro s
+         SET s.geometria = to_geometry(s.geometria_wkb)
+       WHERE s.execucao_id = p_execucao_id;
+
+      -- Veio WKB, mas não converteu.
+      INSERT INTO staging_erro (staging_id, tipo_erro, campo, motivo)
+      SELECT s.id, 'GEOMETRIA_MALFORMADA', v_geometry_column, 'Geometria ilegível (WKB inválido).'
+        FROM staging_registro s
+       WHERE s.execucao_id = p_execucao_id
+         AND DBMS_LOB.GETLENGTH(s.geometria_wkb) > 0
+         AND s.geometria IS NULL;
+
+      -- Não veio WKB (nulo ou vazio).
+      IF v_geometry_required = 1 THEN
+        INSERT INTO staging_erro (staging_id, tipo_erro, campo, motivo)
+        SELECT s.id, 'GEOMETRIA_NULA', v_geometry_column, 'Geometria obrigatória não informada.'
+          FROM staging_registro s
+         WHERE s.execucao_id = p_execucao_id
+           AND NVL(DBMS_LOB.GETLENGTH(s.geometria_wkb), 0) = 0;
+      END IF;
+
+      -- Converteu, mas é inválida. A validação é uma consulta só para a execução
+      -- inteira; o loop passa só pelas inválidas, que são poucas.
+      FOR r IN (SELECT x.id, x.camada, x.numero_linha, x.chave_natural, x.geometria, x.resultado
+                  FROM (SELECT s.id, s.camada, s.numero_linha, s.chave_natural, s.geometria,
+                               SDO_GEOM.VALIDATE_GEOMETRY_WITH_CONTEXT(s.geometria, c_tolerance) resultado
+                          FROM staging_registro s
+                         WHERE s.execucao_id = p_execucao_id
+                           AND s.geometria IS NOT NULL) x
+                 WHERE x.resultado <> 'TRUE') LOOP
+        -- CORRIGIR_E_REGISTRAR: só vale a correção que sai válida.
+        v_fixed := NULL;
+        IF v_geometry_policy = 'CORRIGIR_E_REGISTRAR' THEN
+          v_fixed := rectify(r.geometria);
+          IF v_fixed IS NOT NULL
+             AND SDO_GEOM.VALIDATE_GEOMETRY_WITH_CONTEXT(v_fixed, c_tolerance) <> 'TRUE' THEN
+            v_fixed := NULL;
+          END IF;
+        END IF;
+
+        IF v_fixed IS NOT NULL THEN
+          INSERT INTO correcao_automatica
+            (execucao_id, camada, numero_linha, chave_natural, coluna,
+             erro_original, geometria_original, geometria_corrigida)
+          VALUES
+            (p_execucao_id, r.camada, r.numero_linha, r.chave_natural, v_geometry_column,
+             SUBSTR(r.resultado, 1, 400), r.geometria, v_fixed);
+
+          UPDATE staging_registro SET geometria = v_fixed WHERE id = r.id;
+        ELSE
+          -- QUARENTENA, ou não deu para corrigir.
+          INSERT INTO staging_erro (staging_id, tipo_erro, campo, motivo)
+          VALUES (r.id, 'GEOMETRIA_INVALIDA', v_geometry_column,
+                  SUBSTR('Geometria inválida: ' || r.resultado, 1, 400));
+        END IF;
+      END LOOP;
+
+      -- Fora do PR: reprova só a que não encosta em nenhum município do PR.
+      -- Parcialmente fora aprova, sem recorte. As que já têm erro
+      -- GEOMETRIA_INVALIDA ficam de fora: estão reprovadas e o SDO_ANYINTERACT pode falhar nelas.
+      IF v_check_pr = 1 THEN
+        INSERT INTO staging_erro (staging_id, tipo_erro, campo, motivo)
+        SELECT s.id, 'FORA_DO_RECORTE_TERRITORIAL', v_geometry_column, 'Geometria totalmente fora do Paraná.'
+          FROM staging_registro s
+         WHERE s.execucao_id = p_execucao_id
+           AND s.geometria IS NOT NULL
+           AND NOT EXISTS (SELECT 1
+                             FROM staging_erro e
+                            WHERE e.staging_id = s.id
+                              AND e.tipo_erro = 'GEOMETRIA_INVALIDA')
+           AND NOT EXISTS (SELECT 1
+                             FROM municipio m
+                            WHERE m.estado = 'PR'
+                              AND SDO_ANYINTERACT(m.geometria, s.geometria) = 'TRUE');
+      END IF;
+    END IF;
+
+    -- Domínio: valor informado que não está na lista (ativa) do domínio.
+    -- Vazio não entra aqui: isso é com o obrigatório.
+    FOR r IN (SELECT fc.nome_coluna, rc.dominio_id
+                FROM regra_campo rc
+                JOIN fonte_coluna fc ON fc.id = rc.fonte_coluna_id
+               WHERE rc.fonte_id = v_fonte_id
+                 AND rc.dominio_id IS NOT NULL) LOOP
+      EXECUTE IMMEDIATE
+        'INSERT INTO staging_erro (staging_id, tipo_erro, campo, motivo, valor_recebido)
+         SELECT x.id, ''VALOR_FORA_DO_DOMINIO'', :campo, ''Valor fora da lista permitida.'', SUBSTR(x.valor, 1, 1000)
+           FROM (SELECT s.id, TRIM(JSON_VALUE(s.atributos, ' || json_path(r.nome_coluna) || ')) valor
+                   FROM staging_registro s
+                  WHERE s.execucao_id = :execucao) x
+          WHERE x.valor IS NOT NULL
+            AND NOT EXISTS (SELECT 1
+                              FROM dominio_valor dv
+                             WHERE dv.dominio_id = :dominio
+                               AND dv.ativo = 1
+                               AND dv.valor = x.valor)'
+        USING r.nome_coluna, p_execucao_id, r.dominio_id;
     END LOOP;
 
     -- Linha com algum erro reprova; o resto aprova.
