@@ -437,6 +437,67 @@ class PkgQualityTest {
         assertThat(erros(CAMADA, 1)).containsExactly("FORA_DO_RECORTE_TERRITORIAL");
     }
 
+    // ----- regressão (T4) -------------------------------------------------------
+    // O TESTE-001 da V3 já está na imovel_rural com area_ha = 100.5.
+
+    @Test
+    void valorAnteriorQueSomeEReprovadoPorRegressao() {
+        bloquearRegressao("area_ha");
+        linha(CAMADA, 1, """
+                {"cod_imovel": "TESTE-001", "situacao": "ATIVO"}""");
+
+        validar();
+
+        assertThat(status(CAMADA, 1)).isEqualTo("REPROVADO");
+        assertThat(erros(CAMADA, 1)).containsExactly("REGRESSAO_DE_VALOR");
+    }
+
+    /** Falso nulo também é vazio. */
+    @Test
+    void valorAnteriorQueViraFalsoNuloEReprovado() {
+        bloquearRegressao("area_ha");
+        linha(CAMADA, 1, """
+                {"cod_imovel": "TESTE-001", "area_ha": "N/A", "situacao": "ATIVO"}""");
+
+        validar();
+
+        assertThat(erros(CAMADA, 1)).containsExactly("REGRESSAO_DE_VALOR");
+    }
+
+    /** Regressão é preenchido → vazio, não valor menor (Leandro). */
+    @Test
+    void valorMenorNaoERegressao() {
+        bloquearRegressao("area_ha");
+        linha(CAMADA, 1, """
+                {"cod_imovel": "TESTE-001", "area_ha": "50.0", "situacao": "ATIVO"}""");
+
+        validar();
+
+        assertThat(status(CAMADA, 1)).isEqualTo("APROVADO");
+    }
+
+    /** Imóvel novo: não tem carga anterior para comparar. */
+    @Test
+    void imovelNovoSemValorNaoERegressao() {
+        bloquearRegressao("area_ha");
+        linha(CAMADA, 1, """
+                {"cod_imovel": "PR-NOVO", "situacao": "ATIVO"}""");
+
+        validar();
+
+        assertThat(status(CAMADA, 1)).isEqualTo("APROVADO");
+    }
+
+    @Test
+    void semBloquearRegressaoNaoConfere() {
+        linha(CAMADA, 1, """
+                {"cod_imovel": "TESTE-001", "situacao": "ATIVO"}""");
+
+        validar();
+
+        assertThat(status(CAMADA, 1)).isEqualTo("APROVADO");
+    }
+
     // ----- revalidar_registro (T6) ----------------------------------------------
 
     /** O operador corrigiu o payload: a revalidação usa o corrigido. */
@@ -649,6 +710,15 @@ class PkgQualityTest {
     private long ultimaQuarentena() {
         return jdbc.queryForObject(
                 "SELECT MAX(id) FROM registro_quarentena WHERE execucao_id = ?", Long.class, execucaoId);
+    }
+
+    /** Liga o bloqueio de regressão numa coluna da fonte de teste. */
+    private void bloquearRegressao(String coluna) {
+        jdbc.update("""
+                UPDATE regra_campo SET bloquear_regressao = 1
+                 WHERE fonte_coluna_id = (SELECT fc.id FROM fonte_coluna fc
+                                            JOIN fonte f ON f.id = fc.fonte_id
+                                           WHERE f.sigla = 'TESTE' AND fc.nome_coluna = ?)""", coluna);
     }
 
     // ----- execução e conferência -----------------------------------------------
