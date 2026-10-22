@@ -3,8 +3,8 @@ CREATE OR REPLACE PACKAGE pkg_quality AS
   -- (regra_campo). Grava um erro por regra que falhou em staging_erro e marca
   -- cada linha como APROVADO ou REPROVADO. Não dá COMMIT: quem controla a
   -- transação é a DAG.
-  -- ORA-20001: a fonte tem coluna de geometria e a malha municipal do PR
-  -- ainda não foi carregada.
+  -- ORA-20001: a fonte confere se a geometria está no PR (recortar_pr = 1) e
+  -- a malha municipal do PR ainda não foi carregada.
   PROCEDURE validate(p_execucao_id IN NUMBER);
 
   -- Converte o WKB da staging para SDO_GEOMETRY com SRID 4326 (a DAG já
@@ -59,6 +59,7 @@ CREATE OR REPLACE PACKAGE BODY pkg_quality AS
     v_geometry_column     fonte_coluna.nome_coluna%TYPE;
     v_geometry_required   NUMBER;
     v_geometry_policy     regra_campo.politica_geometria%TYPE;
+    v_check_pr            regra_campo.recortar_pr%TYPE;
     v_fixed               SDO_GEOMETRY;
     v_has_pr_city         NUMBER;
   BEGIN
@@ -72,8 +73,8 @@ CREATE OR REPLACE PACKAGE BODY pkg_quality AS
     -- Coluna de geometria da fonte, se houver. Uma só: a staging guarda uma
     -- geometria por linha (geometria_wkb).
     BEGIN
-      SELECT fc.nome_coluna, rc.obrigatorio, rc.politica_geometria
-        INTO v_geometry_column, v_geometry_required, v_geometry_policy
+      SELECT fc.nome_coluna, rc.obrigatorio, rc.politica_geometria, rc.recortar_pr
+        INTO v_geometry_column, v_geometry_required, v_geometry_policy, v_check_pr
         FROM regra_campo rc
         JOIN fonte_coluna fc ON fc.id = rc.fonte_coluna_id
        WHERE rc.fonte_id = v_fonte_id
@@ -86,8 +87,9 @@ CREATE OR REPLACE PACKAGE BODY pkg_quality AS
 
     -- Trava: "fora do PR" compara a geometria com a malha municipal do IBGE.
     -- Sem nenhum município do PR carregado, todo imóvel seria reprovado e iria
-    -- para a quarentena; melhor falhar a execução e dizer o que falta.
-    IF v_geometry_column IS NOT NULL THEN
+    -- para a quarentena; melhor falhar a execução e dizer o que falta. Só vale
+    -- quando a regra confere o PR (recortar_pr = 1).
+    IF v_check_pr = 1 THEN
       SELECT COUNT(*)
         INTO v_has_pr_city
         FROM municipio
@@ -206,6 +208,25 @@ CREATE OR REPLACE PACKAGE BODY pkg_quality AS
                   SUBSTR('Geometria inválida: ' || r.resultado, 1, 400));
         END IF;
       END LOOP;
+
+      -- Fora do PR: reprova só a que não encosta em nenhum município do PR.
+      -- Parcialmente fora aprova, sem recorte. As que já têm erro GEOMETRIA
+      -- ficam de fora: estão reprovadas e o SDO_ANYINTERACT pode falhar nelas.
+      IF v_check_pr = 1 THEN
+        INSERT INTO staging_erro (staging_id, tipo_erro, campo, motivo)
+        SELECT s.id, 'FORA_DO_PR', v_geometry_column, 'Geometria totalmente fora do Paraná.'
+          FROM staging_registro s
+         WHERE s.execucao_id = p_execucao_id
+           AND s.geometria IS NOT NULL
+           AND NOT EXISTS (SELECT 1
+                             FROM staging_erro e
+                            WHERE e.staging_id = s.id
+                              AND e.tipo_erro = 'GEOMETRIA')
+           AND NOT EXISTS (SELECT 1
+                             FROM municipio m
+                            WHERE m.estado = 'PR'
+                              AND SDO_ANYINTERACT(m.geometria, s.geometria) = 'TRUE');
+      END IF;
     END IF;
 
     -- Domínio: valor informado que não está na lista (ativa) do domínio.
