@@ -1,5 +1,7 @@
 package geoRural.controller;
 
+import geoRural.mapeamento.dto.FonteColunaResponse;
+import geoRural.mapeamento.service.FonteColunaService;
 import geoRural.dto.ArquivoBrutoResponse;
 import geoRural.dto.FonteRequest;
 import geoRural.dto.FonteResponse;
@@ -21,10 +23,12 @@ public class FonteController {
 
     private final FonteService fonteService;
     private final ArquivoBrutoService arquivoBrutoService;
+    private final FonteColunaService fonteColunaService;
 
-    public FonteController(FonteService fonteService, ArquivoBrutoService arquivoBrutoService) {
-        this.fonteService = fonteService;
-        this.arquivoBrutoService = arquivoBrutoService;
+    public FonteController(FonteService fonteService, ArquivoBrutoService arquivoBrutoService, FonteColunaService fonteColunaService) {
+    this.fonteService = fonteService;
+    this.arquivoBrutoService = arquivoBrutoService;
+    this.fonteColunaService = fonteColunaService;
     }
 
     @GetMapping
@@ -32,6 +36,11 @@ public class FonteController {
         return fonteService.listar(busca).stream()
                 .map(this::toResponse)
                 .toList();
+    }
+
+    @GetMapping("/{id}/colunas")
+        public List<FonteColunaResponse> listarColunas(@PathVariable Long id) {
+    return fonteColunaService.listar(id);
     }
 
     @PostMapping
