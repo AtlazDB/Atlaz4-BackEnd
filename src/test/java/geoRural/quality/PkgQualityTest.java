@@ -5,15 +5,22 @@ package geoRural.quality;
 // por isso o pkg_quality.validate não pode dar COMMIT.
 // Os tipos de erro são os 13 códigos da V10 (tabela tipo_erro).
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.data.jpa.test.autoconfigure.DataJpaTest;
 import org.springframework.boot.jdbc.test.autoconfigure.AutoConfigureTestDatabase;
+import org.springframework.jdbc.core.ConnectionCallback;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.TestPropertySource;
 
 import java.nio.charset.StandardCharsets;
+import java.sql.CallableStatement;
+import java.sql.Types;
+import java.util.ArrayList;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -430,6 +437,70 @@ class PkgQualityTest {
         assertThat(erros(CAMADA, 1)).containsExactly("FORA_DO_RECORTE_TERRITORIAL");
     }
 
+    // ----- revalidar_registro (T6) ----------------------------------------------
+
+    /** O operador corrigiu o payload: a revalidação usa o corrigido. */
+    @Test
+    void revalidarComPayloadCorrigidoAprova() {
+        long id = quarentenaCorrigida("""
+                {"area_ha": "12.5", "situacao": "ATIVO"}""", """
+                {"cod_imovel": "PR-001", "area_ha": "12.5", "situacao": "ATIVO"}""");
+
+        JsonNode resultado = revalidar(id);
+
+        assertThat(resultado.get("status").asText()).isEqualTo("APROVADO");
+        assertThat(tiposDeErro(resultado)).isEmpty();
+    }
+
+    /** Sem correção vale o payload original, então o erro continua. */
+    @Test
+    void revalidarSemCorrecaoContinuaReprovado() {
+        long id = quarentena("""
+                {"area_ha": "12.5", "situacao": "ATIVO"}""");
+
+        JsonNode resultado = revalidar(id);
+
+        assertThat(resultado.get("status").asText()).isEqualTo("REPROVADO");
+        assertThat(tiposDeErro(resultado)).containsExactly("CAMPO_OBRIGATORIO_AUSENTE");
+        assertThat(resultado.get("erros").get(0).get("campo").asText()).isEqualTo("cod_imovel");
+    }
+
+    /** Só devolve o resultado: a staging fica como estava, e a sobra da DAG não conta como chave duplicada. */
+    @Test
+    void revalidarNaoGravaNada() {
+        linha(CAMADA, 1, """
+                {"cod_imovel": "PR-001", "area_ha": "12.5", "situacao": "ATIVO"}""");
+        long id = quarentenaCorrigida("""
+                {"area_ha": "12.5", "situacao": "ATIVO"}""", """
+                {"cod_imovel": "PR-001", "area_ha": "12.5", "situacao": "ATIVO"}""");
+
+        JsonNode resultado = revalidar(id);
+
+        assertThat(resultado.get("status").asText()).isEqualTo("APROVADO");
+        assertThat(linhasNaStaging()).isEqualTo(1);
+        assertThat(status(CAMADA, 1)).isEqualTo("PENDENTE");
+        assertThat(erros(CAMADA, 1)).isEmpty();
+    }
+
+    @Test
+    void revalidarIdInexistenteFalha() {
+        assertThatThrownBy(() -> revalidar(-1))
+                .hasMessageContaining("ORA-20002");
+    }
+
+    /** A geometria vem da quarentena (SDO_GEOMETRY) e volta a ser WKB para o validate. */
+    @Test
+    void revalidarUsaAGeometriaDaQuarentena() {
+        regraGeometria(1);
+        long comGeometria = quarentenaComPoligono("""
+                {"cod_imovel": "PR-001", "area_ha": "12.5", "situacao": "ATIVO"}""");
+        long semGeometria = quarentena("""
+                {"cod_imovel": "PR-002", "area_ha": "8.0", "situacao": "ATIVO"}""");
+
+        assertThat(revalidar(comGeometria).get("status").asText()).isEqualTo("APROVADO");
+        assertThat(tiposDeErro(revalidar(semGeometria))).containsExactly("GEOMETRIA_NULA");
+    }
+
     // ----- montagem do cenário ------------------------------------------------
 
     private void valorDominio(String valor) {
@@ -547,6 +618,39 @@ class PkgQualityTest {
                 VALUES (?, ?, ?, ?, ?)""", execucaoId, camada, numero, atributosJson, wkb);
     }
 
+    /** Registro na quarentena sem correção do operador. */
+    private long quarentena(String payload) {
+        jdbc.update("""
+                INSERT INTO registro_quarentena (execucao_id, numero_linha, motivo, payload)
+                VALUES (?, 1, 'teste do revalidar_registro', ?)""", execucaoId, payload);
+        return ultimaQuarentena();
+    }
+
+    /** Registro na quarentena com o payload corrigido pelo operador. */
+    private long quarentenaCorrigida(String payload, String payloadCorrigido) {
+        jdbc.update("""
+                INSERT INTO registro_quarentena (execucao_id, numero_linha, motivo, payload, payload_corrigido)
+                VALUES (?, 1, 'teste do revalidar_registro', ?, ?)""", execucaoId, payload, payloadCorrigido);
+        return ultimaQuarentena();
+    }
+
+    /** Registro na quarentena com o quadrado de Londrina, já como SDO_GEOMETRY (como a V10 guarda). */
+    private long quarentenaComPoligono(String payload) {
+        jdbc.update("""
+                INSERT INTO registro_quarentena (execucao_id, numero_linha, motivo, payload, geometria)
+                VALUES (?, 1, 'teste do revalidar_registro', ?, SDO_GEOMETRY(2003, 4326, NULL,
+                          SDO_ELEM_INFO_ARRAY(1, 1003, 1),
+                          SDO_ORDINATE_ARRAY(-51.20, -23.35, -51.15, -23.35, -51.15, -23.30,
+                                             -51.20, -23.30, -51.20, -23.35)))""",
+                execucaoId, payload);
+        return ultimaQuarentena();
+    }
+
+    private long ultimaQuarentena() {
+        return jdbc.queryForObject(
+                "SELECT MAX(id) FROM registro_quarentena WHERE execucao_id = ?", Long.class, execucaoId);
+    }
+
     // ----- execução e conferência -----------------------------------------------
 
     private void validar() {
@@ -601,5 +705,33 @@ class PkgQualityTest {
                   JOIN staging_registro s ON s.id = e.staging_id
                  WHERE s.execucao_id = ? AND s.camada = ? AND s.numero_linha = ?""",
                 String.class, execucaoId, camada, numero);
+    }
+
+    /** Chama a função como o QuarentenaService chama e lê o JSON. */
+    private JsonNode revalidar(long quarentenaId) {
+        String json = jdbc.execute((ConnectionCallback<String>) con -> {
+            try (CallableStatement cs = con.prepareCall("{? = call pkg_quality.revalidar_registro(?)}")) {
+                cs.registerOutParameter(1, Types.CLOB);
+                cs.setLong(2, quarentenaId);
+                cs.execute();
+                return cs.getString(1);
+            }
+        });
+        try {
+            return new ObjectMapper().readTree(json);
+        } catch (JsonProcessingException e) {
+            throw new IllegalStateException("JSON inválido do revalidar_registro: " + json, e);
+        }
+    }
+
+    private List<String> tiposDeErro(JsonNode resultado) {
+        List<String> tipos = new ArrayList<>();
+        resultado.get("erros").forEach(e -> tipos.add(e.get("tipo_erro").asText()));
+        return tipos;
+    }
+
+    private int linhasNaStaging() {
+        return jdbc.queryForObject(
+                "SELECT COUNT(*) FROM staging_registro WHERE execucao_id = ?", Integer.class, execucaoId);
     }
 }

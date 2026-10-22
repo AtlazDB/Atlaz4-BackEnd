@@ -31,6 +31,16 @@ public class GlobalExceptionHandler {
         return ResponseEntity.status(HttpStatus.NOT_FOUND).body(ErroResponse.de(ex.getMessage()));
     }
 
+    @ExceptionHandler(ResourceNotFoundException.class)
+    public ResponseEntity<ErroResponse> handleRecursoNaoEncontrado(ResourceNotFoundException ex) {
+        return ResponseEntity.status(HttpStatus.NOT_FOUND).body(ErroResponse.de(ex.getMessage()));
+    }
+
+    @ExceptionHandler(QuarantineClosedException.class)
+    public ResponseEntity<ErroResponse> handleQuarentenaEncerrada(QuarantineClosedException ex) {
+        return ResponseEntity.status(HttpStatus.CONFLICT).body(ErroResponse.de(ex.getMessage()));
+    }
+
     @ExceptionHandler(CargaNaoPermitidaException.class)
     public ResponseEntity<ErroResponse> handleCargaNaoPermitida(CargaNaoPermitidaException ex) {
         return ResponseEntity.status(HttpStatus.CONFLICT).body(ErroResponse.de(ex.getMessage()));
