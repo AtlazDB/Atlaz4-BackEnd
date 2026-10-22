@@ -20,12 +20,22 @@ CREATE OR REPLACE PACKAGE BODY pkg_quality AS
   -- Mesmo valor da V4.
   c_tolerance CONSTANT NUMBER := 0.05;
 
+  -- Máscara da DATA quando a regra não traz formato_origem (Rocha: DD/MM/YYYY).
+  c_date_format CONSTANT VARCHAR2(30) := 'DD/MM/YYYY';
+
   -- Caminho JSON de uma coluna, já entre aspas para entrar no SQL dinâmico.
   -- O ENQUOTE_LITERAL barra um nome de coluna que quebraria o SQL.
   FUNCTION json_path(p_column IN VARCHAR2) RETURN VARCHAR2 IS
   BEGIN
     RETURN DBMS_ASSERT.ENQUOTE_LITERAL('$."' || p_column || '"');
   END json_path;
+
+  -- Caminho do tipo JSON da coluna: 'string', 'null' etc., ou NULL quando a
+  -- chave nem veio. Separa o campo ausente do campo em branco.
+  FUNCTION json_type_path(p_column IN VARCHAR2) RETURN VARCHAR2 IS
+  BEGIN
+    RETURN DBMS_ASSERT.ENQUOTE_LITERAL('$."' || p_column || '".type()');
+  END json_type_path;
 
   -- Um WKB ruim não pode derrubar o UPDATE de todas as linhas: devolve NULL e
   -- o validate reprova só aquela linha.
@@ -62,6 +72,7 @@ CREATE OR REPLACE PACKAGE BODY pkg_quality AS
     v_check_pr            regra_campo.recortar_pr%TYPE;
     v_fixed               SDO_GEOMETRY;
     v_has_pr_city         NUMBER;
+    v_invalid             VARCHAR2(400);
   BEGIN
     -- Fonte da execução: é ela que diz quais regras valem.
     SELECT a.fonte_id
@@ -102,8 +113,12 @@ CREATE OR REPLACE PACKAGE BODY pkg_quality AS
       END IF;
     END IF;
 
-    -- Obrigatório: campo ausente, nulo ou só com espaços. A geometria não está
-    -- no JSON (vem em geometria_wkb): o obrigatório dela fica no bloco abaixo.
+    -- Obrigatório. Os códigos são os da V10 (tabela tipo_erro):
+    --   CAMPO_OBRIGATORIO_AUSENTE: a chave não veio no JSON ou veio null;
+    --   CAMPO_EM_BRANCO: veio, mas vazia, só com espaços ou com um falso nulo
+    --   (NULL, N/A, -).
+    -- A geometria não está no JSON (vem em geometria_wkb): o obrigatório dela
+    -- fica no bloco da geometria (GEOMETRIA_NULA).
     FOR r IN (SELECT fc.nome_coluna
                 FROM regra_campo rc
                 JOIN fonte_coluna fc ON fc.id = rc.fonte_coluna_id
@@ -111,12 +126,62 @@ CREATE OR REPLACE PACKAGE BODY pkg_quality AS
                  AND rc.obrigatorio = 1
                  AND rc.tipo_dado <> 'GEOMETRIA') LOOP
       EXECUTE IMMEDIATE
-        'INSERT INTO staging_erro (staging_id, tipo_erro, campo, motivo)
-         SELECT s.id, ''OBRIGATORIO'', :campo, ''Campo obrigatório não informado.''
-           FROM staging_registro s
-          WHERE s.execucao_id = :execucao
-            AND TRIM(JSON_VALUE(s.atributos, ' || json_path(r.nome_coluna) || ')) IS NULL'
+        'INSERT INTO staging_erro (staging_id, tipo_erro, campo, motivo, valor_recebido)
+         SELECT x.id,
+                CASE WHEN x.tipo IS NULL OR x.tipo = ''null''
+                     THEN ''CAMPO_OBRIGATORIO_AUSENTE'' ELSE ''CAMPO_EM_BRANCO'' END,
+                :campo,
+                CASE WHEN x.tipo IS NULL OR x.tipo = ''null''
+                     THEN ''Campo obrigatório não informado.''
+                     ELSE ''Campo obrigatório em branco ou com falso nulo.'' END,
+                SUBSTR(x.valor, 1, 1000)
+           FROM (SELECT s.id,
+                        JSON_VALUE(s.atributos, ' || json_type_path(r.nome_coluna) || ') tipo,
+                        JSON_VALUE(s.atributos, ' || json_path(r.nome_coluna) || ') valor
+                   FROM staging_registro s
+                  WHERE s.execucao_id = :execucao) x
+          WHERE x.tipo IS NULL
+             OR x.tipo = ''null''
+             OR TRIM(x.valor) IS NULL
+             OR UPPER(TRIM(x.valor)) IN (''NULL'', ''N/A'', ''-'')'
         USING r.nome_coluna, p_execucao_id;
+    END LOOP;
+
+    -- Tipo: valor informado que não converte para o tipo da regra. Vazio e
+    -- falso nulo não entram (isso é com o obrigatório). TEXTO aceita tudo e a
+    -- GEOMETRIA vem em geometria_wkb.
+    --   INTEIRO:  só dígitos, com sinal opcional;
+    --   DECIMAL:  ponto como separador, como no CAR (Rocha);
+    --   DATA:     formato_origem ou DD/MM/YYYY, exato (FX) (Rocha);
+    --   BOOLEANO: SIM/NÃO, sem diferenciar maiúscula (Rocha); NAO sem acento
+    --             também vale, porque os arquivos do CAR vêm sem acento.
+    FOR r IN (SELECT fc.nome_coluna, rc.tipo_dado, rc.formato_origem
+                FROM regra_campo rc
+                JOIN fonte_coluna fc ON fc.id = rc.fonte_coluna_id
+               WHERE rc.fonte_id = v_fonte_id
+                 AND rc.tipo_dado IN ('INTEIRO', 'DECIMAL', 'DATA', 'BOOLEANO')) LOOP
+      v_invalid := CASE r.tipo_dado
+        WHEN 'INTEIRO' THEN
+          'NOT REGEXP_LIKE(x.valor, ''^[+-]?[0-9]+$'')'
+        WHEN 'DECIMAL' THEN
+          'NOT REGEXP_LIKE(x.valor, ''^[+-]?[0-9]*[.]?[0-9]+$'')'
+        WHEN 'DATA' THEN
+          'VALIDATE_CONVERSION(x.valor AS DATE, '
+             || DBMS_ASSERT.ENQUOTE_LITERAL('FX' || NVL(r.formato_origem, c_date_format)) || ') = 0'
+        WHEN 'BOOLEANO' THEN
+          'UPPER(x.valor) NOT IN (''SIM'', ''NÃO'', ''NAO'')'
+      END;
+
+      EXECUTE IMMEDIATE
+        'INSERT INTO staging_erro (staging_id, tipo_erro, campo, motivo, valor_recebido)
+         SELECT x.id, ''TIPO_DE_DADO_INVALIDO'', :campo, :motivo, SUBSTR(x.valor, 1, 1000)
+           FROM (SELECT s.id, TRIM(JSON_VALUE(s.atributos, ' || json_path(r.nome_coluna) || ')) valor
+                   FROM staging_registro s
+                  WHERE s.execucao_id = :execucao) x
+          WHERE x.valor IS NOT NULL
+            AND UPPER(x.valor) NOT IN (''NULL'', ''N/A'', ''-'')
+            AND ' || v_invalid
+        USING r.nome_coluna, 'Valor não converte para ' || r.tipo_dado || '.', p_execucao_id;
     END LOOP;
 
     -- Chave duplicada: o mesmo valor de chave em mais de uma linha da execução.
@@ -130,7 +195,7 @@ CREATE OR REPLACE PACKAGE BODY pkg_quality AS
                  AND rc.chave = 1) LOOP
       EXECUTE IMMEDIATE
         'INSERT INTO staging_erro (staging_id, tipo_erro, campo, motivo, valor_recebido)
-         SELECT x.id, ''CHAVE_DUPLICADA'', :campo, ''Chave repetida em mais de uma linha do arquivo.'', SUBSTR(x.valor, 1, 1000)
+         SELECT x.id, ''CHAVE_NATURAL_DUPLICADA'', :campo, ''Chave repetida em mais de uma linha do arquivo.'', SUBSTR(x.valor, 1, 1000)
            FROM (SELECT y.id, y.valor, COUNT(*) OVER (PARTITION BY y.valor) qtd
                    FROM (SELECT s.id, TRIM(JSON_VALUE(s.atributos, ' || json_path(r.nome_coluna) || ')) valor
                            FROM staging_registro s
@@ -158,7 +223,7 @@ CREATE OR REPLACE PACKAGE BODY pkg_quality AS
 
       -- Veio WKB, mas não converteu.
       INSERT INTO staging_erro (staging_id, tipo_erro, campo, motivo)
-      SELECT s.id, 'GEOMETRIA', v_geometry_column, 'Geometria ilegível (WKB inválido).'
+      SELECT s.id, 'GEOMETRIA_MALFORMADA', v_geometry_column, 'Geometria ilegível (WKB inválido).'
         FROM staging_registro s
        WHERE s.execucao_id = p_execucao_id
          AND DBMS_LOB.GETLENGTH(s.geometria_wkb) > 0
@@ -167,7 +232,7 @@ CREATE OR REPLACE PACKAGE BODY pkg_quality AS
       -- Não veio WKB (nulo ou vazio).
       IF v_geometry_required = 1 THEN
         INSERT INTO staging_erro (staging_id, tipo_erro, campo, motivo)
-        SELECT s.id, 'OBRIGATORIO', v_geometry_column, 'Campo obrigatório não informado.'
+        SELECT s.id, 'GEOMETRIA_NULA', v_geometry_column, 'Geometria obrigatória não informada.'
           FROM staging_registro s
          WHERE s.execucao_id = p_execucao_id
            AND NVL(DBMS_LOB.GETLENGTH(s.geometria_wkb), 0) = 0;
@@ -204,24 +269,24 @@ CREATE OR REPLACE PACKAGE BODY pkg_quality AS
         ELSE
           -- QUARENTENA, ou não deu para corrigir.
           INSERT INTO staging_erro (staging_id, tipo_erro, campo, motivo)
-          VALUES (r.id, 'GEOMETRIA', v_geometry_column,
+          VALUES (r.id, 'GEOMETRIA_INVALIDA', v_geometry_column,
                   SUBSTR('Geometria inválida: ' || r.resultado, 1, 400));
         END IF;
       END LOOP;
 
       -- Fora do PR: reprova só a que não encosta em nenhum município do PR.
-      -- Parcialmente fora aprova, sem recorte. As que já têm erro GEOMETRIA
-      -- ficam de fora: estão reprovadas e o SDO_ANYINTERACT pode falhar nelas.
+      -- Parcialmente fora aprova, sem recorte. As que já têm erro
+      -- GEOMETRIA_INVALIDA ficam de fora: estão reprovadas e o SDO_ANYINTERACT pode falhar nelas.
       IF v_check_pr = 1 THEN
         INSERT INTO staging_erro (staging_id, tipo_erro, campo, motivo)
-        SELECT s.id, 'FORA_DO_PR', v_geometry_column, 'Geometria totalmente fora do Paraná.'
+        SELECT s.id, 'FORA_DO_RECORTE_TERRITORIAL', v_geometry_column, 'Geometria totalmente fora do Paraná.'
           FROM staging_registro s
          WHERE s.execucao_id = p_execucao_id
            AND s.geometria IS NOT NULL
            AND NOT EXISTS (SELECT 1
                              FROM staging_erro e
                             WHERE e.staging_id = s.id
-                              AND e.tipo_erro = 'GEOMETRIA')
+                              AND e.tipo_erro = 'GEOMETRIA_INVALIDA')
            AND NOT EXISTS (SELECT 1
                              FROM municipio m
                             WHERE m.estado = 'PR'
@@ -238,7 +303,7 @@ CREATE OR REPLACE PACKAGE BODY pkg_quality AS
                  AND rc.dominio_id IS NOT NULL) LOOP
       EXECUTE IMMEDIATE
         'INSERT INTO staging_erro (staging_id, tipo_erro, campo, motivo, valor_recebido)
-         SELECT x.id, ''DOMINIO'', :campo, ''Valor fora da lista permitida.'', SUBSTR(x.valor, 1, 1000)
+         SELECT x.id, ''VALOR_FORA_DO_DOMINIO'', :campo, ''Valor fora da lista permitida.'', SUBSTR(x.valor, 1, 1000)
            FROM (SELECT s.id, TRIM(JSON_VALUE(s.atributos, ' || json_path(r.nome_coluna) || ')) valor
                    FROM staging_registro s
                   WHERE s.execucao_id = :execucao) x
