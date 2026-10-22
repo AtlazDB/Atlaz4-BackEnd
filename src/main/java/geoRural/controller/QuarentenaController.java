@@ -9,6 +9,8 @@ import org.springframework.data.domain.Pageable;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
+import java.util.Map;
+
 @RestController
 @RequestMapping("/quarentena")
 public class QuarentenaController {
@@ -41,6 +43,13 @@ public class QuarentenaController {
         return ResponseEntity.ok(service.buscarPorId(id));
     }
 
+    /** GeoJSON da geometria como chegou; 204 quando ela nem pôde ser lida (GEOMETRIA_MALFORMADA). */
+    @GetMapping("/{id}/geometria")
+    public ResponseEntity<Map<String, Object>> buscarGeometria(@PathVariable Long id) {
+        Map<String, Object> geometria = service.buscarGeometria(id);
+        return geometria == null ? ResponseEntity.noContent().build() : ResponseEntity.ok(geometria);
+    }
+
     @PostMapping("/{id}/iniciar-analise")
     public ResponseEntity<RegistroQuarentena> iniciarAnalise(@PathVariable Long id) {
         return ResponseEntity.ok(service.iniciarAnalise(id));
@@ -61,7 +70,7 @@ public class QuarentenaController {
     }
 
     @PostMapping("/{id}/revalidar")
-    public ResponseEntity<RegistroQuarentena> revalidar(@PathVariable Long id) {
+    public ResponseEntity<RevalidationResponse> revalidar(@PathVariable Long id) {
         return ResponseEntity.ok(service.revalidar(id));
     }
 }

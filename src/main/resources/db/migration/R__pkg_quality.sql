@@ -11,6 +11,12 @@ CREATE OR REPLACE PACKAGE pkg_quality AS
   -- reprojeta; o WKB puro não traz o SRID). WKB vazio ou quebrado devolve NULL.
   -- Pública porque o validate a chama dentro de um UPDATE.
   FUNCTION to_geometry(p_wkb IN BLOB) RETURN SDO_GEOMETRY;
+
+  -- Valida de novo um registro da quarentena (com o payload corrigido, se
+  -- houver) e devolve o resultado em JSON: {"status": ..., "erros": [...]}.
+  -- Não grava nada: desfaz tudo antes de devolver.
+  -- ORA-20002: registro de quarentena não encontrado.
+  FUNCTION revalidar_registro(p_quarentena_id IN NUMBER) RETURN CLOB;
 END pkg_quality;
 /
 
@@ -325,6 +331,65 @@ CREATE OR REPLACE PACKAGE BODY pkg_quality AS
                       END
      WHERE s.execucao_id = p_execucao_id;
   END validate;
+
+      FUNCTION revalidar_registro(p_quarentena_id IN NUMBER) RETURN CLOB IS
+        v_q           registro_quarentena%ROWTYPE;
+        v_staging_id  staging_registro.id%TYPE;
+        v_result      CLOB;
+      BEGIN
+        -- Parte A: busca o registro (antes do savepoint, ver explicação)
+        BEGIN
+          SELECT * INTO v_q FROM registro_quarentena WHERE id = p_quarentena_id;
+        EXCEPTION
+          WHEN NO_DATA_FOUND THEN
+            RAISE_APPLICATION_ERROR(-20002, 'Registro de quarentena não encontrado: ' || p_quarentena_id);
+        END;
+
+        -- Parte B: marca o ponto de volta e monta a staging só com este registro.
+        SAVEPOINT sp_revalidar;
+
+        -- O validate olha todas as linhas da execução. Tirando as que sobraram,
+        -- a linha revalidada não acusa chave duplicada com ela mesma.
+        DELETE FROM staging_registro WHERE execucao_id = v_q.execucao_id;
+
+        INSERT INTO staging_registro (execucao_id, camada, numero_linha, atributos, geometria_wkb)
+        VALUES (v_q.execucao_id,
+                'REVALIDACAO',
+                NVL(v_q.numero_linha, 0),
+                NVL(v_q.payload_corrigido, v_q.payload),
+                CASE WHEN v_q.geometria IS NOT NULL
+                     THEN SDO_UTIL.TO_WKBGEOMETRY(v_q.geometria) END)
+        RETURNING id INTO v_staging_id;
+
+        -- Parte C: valida e monta o JSON com o status e os erros.
+        validate(v_q.execucao_id);
+
+        SELECT JSON_OBJECT(
+                 'status' VALUE s.status,
+                 'erros'  VALUE COALESCE(
+                            (SELECT JSON_ARRAYAGG(
+                                      JSON_OBJECT('tipo_erro'      VALUE e.tipo_erro,
+                                                  'campo'          VALUE e.campo,
+                                                  'motivo'         VALUE e.motivo,
+                                                  'valor_recebido' VALUE e.valor_recebido)
+                                      ORDER BY e.id RETURNING CLOB)
+                               FROM staging_erro e
+                              WHERE e.staging_id = s.id),
+                            TO_CLOB('[]')) FORMAT JSON
+                 RETURNING CLOB)
+          INTO v_result
+          FROM staging_registro s
+         WHERE s.id = v_staging_id;
+
+        -- Parte D: desfaz tudo e devolve. O JSON está numa variável, não numa
+        -- tabela, então o rollback não apaga.
+        ROLLBACK TO SAVEPOINT sp_revalidar;
+        RETURN v_result;
+      EXCEPTION
+        WHEN OTHERS THEN
+          ROLLBACK TO SAVEPOINT sp_revalidar;
+          RAISE;
+      END revalidar_registro;
 
 END pkg_quality;
 /
