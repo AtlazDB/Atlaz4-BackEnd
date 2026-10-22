@@ -79,6 +79,8 @@ CREATE OR REPLACE PACKAGE BODY pkg_quality AS
     v_fixed               SDO_GEOMETRY;
     v_has_pr_city         NUMBER;
     v_invalid             VARCHAR2(400);
+    v_key_table           regra_campo.destino_tabela%TYPE;
+    v_key_column          regra_campo.campo_destino%TYPE;
   BEGIN
     -- Fonte da execução: é ela que diz quais regras valem.
     SELECT a.fonte_id
@@ -219,6 +221,51 @@ CREATE OR REPLACE PACKAGE BODY pkg_quality AS
           WHERE s.execucao_id = :execucao'
         USING p_execucao_id;
     END LOOP;
+
+    -- Regressão: campo preenchido na carga anterior que chegou vazio (Leandro).
+    -- Acha o registro anterior pela chave_natural na tabela de destino da
+    -- chave. Só com chave de uma coluna: sem chave não dá para achar o
+    -- anterior, e a chave composta ainda não existe.
+    BEGIN
+      SELECT rc.destino_tabela, rc.campo_destino
+        INTO v_key_table, v_key_column
+        FROM regra_campo rc
+       WHERE rc.fonte_id = v_fonte_id
+         AND rc.chave = 1;
+    EXCEPTION
+      WHEN NO_DATA_FOUND OR TOO_MANY_ROWS THEN
+        v_key_table := NULL;
+    END;
+
+    IF v_key_table IS NOT NULL THEN
+      -- A geometria não está no JSON: fica de fora.
+      FOR r IN (SELECT fc.nome_coluna, rc.campo_destino
+                  FROM regra_campo rc
+                  JOIN fonte_coluna fc ON fc.id = rc.fonte_coluna_id
+                 WHERE rc.fonte_id = v_fonte_id
+                   AND rc.bloquear_regressao = 1
+                   AND rc.destino_tabela = v_key_table
+                   AND rc.tipo_dado <> 'GEOMETRIA') LOOP
+        -- Tabela e colunas vêm da regra_campo: o SIMPLE_SQL_NAME barra um nome
+        -- que mudaria o SQL.
+        EXECUTE IMMEDIATE
+          'INSERT INTO staging_erro (staging_id, tipo_erro, campo, motivo, valor_recebido)
+           SELECT x.id, ''REGRESSAO_DE_VALOR'', :campo,
+                  SUBSTR(''Campo preenchido na carga anterior chegou vazio. Valor anterior: ''
+                         || d.' || DBMS_ASSERT.SIMPLE_SQL_NAME(r.campo_destino) || ', 1, 400),
+                  SUBSTR(x.valor, 1, 1000)
+             FROM (SELECT s.id, s.chave_natural,
+                          TRIM(JSON_VALUE(s.atributos, ' || json_path(r.nome_coluna) || ')) valor
+                     FROM staging_registro s
+                    WHERE s.execucao_id = :execucao
+                      AND s.chave_natural IS NOT NULL) x
+             JOIN ' || DBMS_ASSERT.SIMPLE_SQL_NAME(v_key_table) || ' d
+               ON d.' || DBMS_ASSERT.SIMPLE_SQL_NAME(v_key_column) || ' = x.chave_natural
+            WHERE (x.valor IS NULL OR UPPER(x.valor) IN (''NULL'', ''N/A'', ''-''))
+              AND d.' || DBMS_ASSERT.SIMPLE_SQL_NAME(r.campo_destino) || ' IS NOT NULL'
+          USING r.nome_coluna, p_execucao_id;
+      END LOOP;
+    END IF;
 
     -- Geometria: converte o WKB e grava em staging_registro.geometria, que é a
     -- que a DAG usa no MERGE. A original continua em geometria_wkb.
