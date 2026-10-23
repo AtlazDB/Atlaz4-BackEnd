@@ -12,6 +12,11 @@ CREATE OR REPLACE PACKAGE pkg_quality AS
   -- Pública porque o validate a chama dentro de um UPDATE.
   FUNCTION to_geometry(p_wkb IN BLOB) RETURN SDO_GEOMETRY;
 
+  -- 1 se o valor é um CPF (11 dígitos) ou CNPJ (14) com os dígitos
+  -- verificadores certos, com ou sem máscara; 0 se não. Pública porque o
+  -- validate a chama dentro de um SELECT.
+  FUNCTION valid_cpf_cnpj(p_value IN VARCHAR2) RETURN NUMBER;
+
   -- Valida de novo um registro da quarentena (com o payload corrigido, se
   -- houver) e devolve o resultado em JSON: {"status": ..., "erros": [...]}.
   -- Não grava nada: desfaz tudo antes de devolver.
@@ -70,6 +75,54 @@ CREATE OR REPLACE PACKAGE BODY pkg_quality AS
       RETURN NULL;
   END rectify;
 
+  FUNCTION valid_cpf_cnpj(p_value IN VARCHAR2) RETURN NUMBER IS
+    v_digits  VARCHAR2(20);
+    v_len     PLS_INTEGER;
+    v_count   PLS_INTEGER;
+    v_sum     PLS_INTEGER;
+    v_weight  PLS_INTEGER;
+    v_check   PLS_INTEGER;
+  BEGIN
+    -- Só dígitos e a máscara (ponto, traço, barra, espaço). Letra ou asterisco
+    -- (documento anonimizado) não dá para validar.
+    IF p_value IS NULL OR NOT REGEXP_LIKE(p_value, '^[0-9./ -]+$') THEN
+      RETURN 0;
+    END IF;
+
+    v_digits := REGEXP_REPLACE(p_value, '[^0-9]', '');
+    v_len := LENGTH(v_digits);
+    IF v_len NOT IN (11, 14) THEN
+      RETURN 0;
+    END IF;
+
+    -- Todos os dígitos iguais passam na conta, mas não são documentos de verdade.
+    IF v_digits = RPAD(SUBSTR(v_digits, 1, 1), v_len, SUBSTR(v_digits, 1, 1)) THEN
+      RETURN 0;
+    END IF;
+
+    -- Os dois dígitos verificadores, um de cada vez. O 1º usa os dígitos antes
+    -- dele (9 no CPF, 12 no CNPJ); o 2º usa um a mais.
+    FOR d IN 1 .. 2 LOOP
+      v_count := v_len - 3 + d;
+      v_sum := 0;
+      FOR i IN 1 .. v_count LOOP
+        -- CPF: pesos de 10 (ou 11) até 2. CNPJ: de 2 a 9 da direita para a
+        -- esquerda, recomeçando no 2.
+        v_weight := CASE WHEN v_len = 11 THEN v_count + 2 - i
+                         ELSE MOD(v_count - i, 8) + 2 END;
+        v_sum := v_sum + TO_NUMBER(SUBSTR(v_digits, i, 1)) * v_weight;
+      END LOOP;
+
+      -- Resto menor que 2 dá dígito 0; senão, 11 menos o resto.
+      v_check := CASE WHEN MOD(v_sum, 11) < 2 THEN 0 ELSE 11 - MOD(v_sum, 11) END;
+      IF v_check <> TO_NUMBER(SUBSTR(v_digits, v_count + 1, 1)) THEN
+        RETURN 0;
+      END IF;
+    END LOOP;
+
+    RETURN 1;
+  END valid_cpf_cnpj;
+
   PROCEDURE validate(p_execucao_id IN NUMBER) IS
     v_fonte_id            NUMBER;
     v_geometry_column     fonte_coluna.nome_coluna%TYPE;
@@ -79,7 +132,8 @@ CREATE OR REPLACE PACKAGE BODY pkg_quality AS
     v_fixed               SDO_GEOMETRY;
     v_has_pr_city         NUMBER;
     v_invalid             VARCHAR2(400);
-    v_key_table           regra_campo.destino_tabela%TYPE;
+    v_exists              VARCHAR2(400);
+    v_key_table          regra_campo.destino_tabela%TYPE;
     v_key_column          regra_campo.campo_destino%TYPE;
   BEGIN
     -- Fonte da execução: é ela que diz quais regras valem.
@@ -367,6 +421,56 @@ CREATE OR REPLACE PACKAGE BODY pkg_quality AS
                                AND dv.ativo = 1
                                AND dv.valor = x.valor)'
         USING r.nome_coluna, p_execucao_id, r.dominio_id;
+    END LOOP;
+
+    -- CPF/CNPJ: dígitos verificadores, com ou sem máscara. Vazio e falso nulo
+    -- não entram (isso é com o obrigatório).
+    FOR r IN (SELECT fc.nome_coluna
+                FROM regra_campo rc
+                JOIN fonte_coluna fc ON fc.id = rc.fonte_coluna_id
+               WHERE rc.fonte_id = v_fonte_id
+                 AND rc.validar_cpf_cnpj = 1) LOOP
+      EXECUTE IMMEDIATE
+        'INSERT INTO staging_erro (staging_id, tipo_erro, campo, motivo, valor_recebido)
+         SELECT x.id, ''CPF_CNPJ_INVALIDO'', :campo, ''CPF ou CNPJ inválido.'', SUBSTR(x.valor, 1, 1000)
+           FROM (SELECT s.id, TRIM(JSON_VALUE(s.atributos, ' || json_path(r.nome_coluna) || ')) valor
+                   FROM staging_registro s
+                  WHERE s.execucao_id = :execucao) x
+          WHERE x.valor IS NOT NULL
+            AND UPPER(x.valor) NOT IN (''NULL'', ''N/A'', ''-'')
+            AND pkg_quality.valid_cpf_cnpj(x.valor) = 0'
+        USING r.nome_coluna, p_execucao_id;
+    END LOOP;
+
+    -- Integridade cruzada: o valor precisa existir na tabela de referência
+    -- (lista fixa da V9). imovel_rural pelo cod_imovel. municipio: 7 dígitos é
+    -- o código IBGE; senão, o nome sem diferenciar acento e maiúscula (o CAR
+    -- traz o nome sem acento), só no PR, porque nomes se repetem entre estados.
+    FOR r IN (SELECT fc.nome_coluna, rc.referencia_cruzada
+                FROM regra_campo rc
+                JOIN fonte_coluna fc ON fc.id = rc.fonte_coluna_id
+               WHERE rc.fonte_id = v_fonte_id
+                 AND rc.referencia_cruzada IS NOT NULL) LOOP
+      v_exists := CASE r.referencia_cruzada
+        WHEN 'imovel_rural' THEN
+          'SELECT 1 FROM imovel_rural i WHERE i.cod_imovel = x.valor'
+        WHEN 'municipio' THEN
+          'SELECT 1 FROM municipio m
+            WHERE (REGEXP_LIKE(x.valor, ''^[0-9]{7}$'') AND m.cod_ibge = x.valor)
+               OR (m.estado = ''PR''
+                   AND NLSSORT(m.nome, ''NLS_SORT=BINARY_AI'') = NLSSORT(x.valor, ''NLS_SORT=BINARY_AI''))'
+      END;
+
+      EXECUTE IMMEDIATE
+        'INSERT INTO staging_erro (staging_id, tipo_erro, campo, motivo, valor_recebido)
+         SELECT x.id, ''REFERENCIA_NAO_ENCONTRADA'', :campo, :motivo, SUBSTR(x.valor, 1, 1000)
+           FROM (SELECT s.id, TRIM(JSON_VALUE(s.atributos, ' || json_path(r.nome_coluna) || ')) valor
+                   FROM staging_registro s
+                  WHERE s.execucao_id = :execucao) x
+          WHERE x.valor IS NOT NULL
+            AND UPPER(x.valor) NOT IN (''NULL'', ''N/A'', ''-'')
+            AND NOT EXISTS (' || v_exists || ')'
+        USING r.nome_coluna, 'Valor não encontrado em ' || r.referencia_cruzada || '.', p_execucao_id;
     END LOOP;
 
     -- Linha com algum erro reprova; o resto aprova.
