@@ -21,7 +21,7 @@ public class RegistroQuarentena {
     @Column(name = "NUMERO_LINHA")
     private Long numeroLinha;
 
-    @Column(name = "CAMPO", length = 80)
+    @Column(name = "CAMPO", length = 128)
     private String campo;
 
     @Column(name = "MOTIVO", nullable = false, length = 400)
@@ -39,7 +39,7 @@ public class RegistroQuarentena {
     @Column(name = "ENTIDADE", length = 80)
     private String entidade;
 
-    @Column(name = "CHAVE_NATURAL", length = 100)
+    @Column(name = "CHAVE_NATURAL", length = 400)
     private String chaveNatural;
 
     @Column(name = "TIPO_ERRO", length = 40)

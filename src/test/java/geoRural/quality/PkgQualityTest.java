@@ -656,6 +656,81 @@ class PkgQualityTest {
         assertThat(status(CAMADA, 3)).isEqualTo("APROVADO");
     }
 
+    // ----- chave composta (T3) --------------------------------------------------
+
+    @Test
+    void chaveCompostaJuntaOsValoresComBarra() {
+        chaveComAno(1, 2);
+        linha(CAMADA, 1, """
+                {"cod_imovel": "PR-001", "ano": "2026", "situacao": "ATIVO"}""");
+
+        validar();
+
+        assertThat(status(CAMADA, 1)).isEqualTo("APROVADO");
+        assertThat(chaveNatural(CAMADA, 1)).isEqualTo("PR-001|2026");
+    }
+
+    @Test
+    void mesmaCombinacaoReprovaAsDuasLinhas() {
+        chaveComAno(1, 2);
+        linha(CAMADA, 1, """
+                {"cod_imovel": "PR-001", "ano": "2026", "situacao": "ATIVO"}""");
+        linha(CAMADA, 2, """
+                {"cod_imovel": "PR-001", "ano": "2026", "situacao": "ATIVO"}""");
+
+        validar();
+
+        assertThat(erros(CAMADA, 1)).containsExactly("CHAVE_NATURAL_DUPLICADA");
+        assertThat(erros(CAMADA, 2)).containsExactly("CHAVE_NATURAL_DUPLICADA");
+        assertThat(jdbc.queryForObject("""
+                SELECT MIN(e.campo) FROM staging_erro e
+                  JOIN staging_registro s ON s.id = e.staging_id
+                 WHERE s.execucao_id = ?""", String.class, execucaoId))
+                .isEqualTo("cod_imovel, ano");
+    }
+
+    /** Só uma parte igual não é chave repetida. */
+    @Test
+    void mesmoCodigoComAnoDiferenteNaoEDuplicada() {
+        chaveComAno(1, 2);
+        linha(CAMADA, 1, """
+                {"cod_imovel": "PR-001", "ano": "2025", "situacao": "ATIVO"}""");
+        linha(CAMADA, 2, """
+                {"cod_imovel": "PR-001", "ano": "2026", "situacao": "ATIVO"}""");
+
+        validar();
+
+        assertThat(status(CAMADA, 1)).isEqualTo("APROVADO");
+        assertThat(status(CAMADA, 2)).isEqualTo("APROVADO");
+    }
+
+    /** Sem o ano não há chave: só o obrigatório reprova, sem acusar duplicada. */
+    @Test
+    void parteDaChaveVaziaDeixaAChaveNula() {
+        chaveComAno(1, 2);
+        linha(CAMADA, 1, """
+                {"cod_imovel": "PR-001", "situacao": "ATIVO"}""");
+        linha(CAMADA, 2, """
+                {"cod_imovel": "PR-001", "situacao": "ATIVO"}""");
+
+        validar();
+
+        assertThat(chaveNatural(CAMADA, 1)).isNull();
+        assertThat(erros(CAMADA, 1)).containsExactly("CAMPO_OBRIGATORIO_AUSENTE");
+        assertThat(erros(CAMADA, 2)).containsExactly("CAMPO_OBRIGATORIO_AUSENTE");
+    }
+
+    @Test
+    void ordemDaChaveSegueAFonteColuna() {
+        chaveComAno(2, 1);
+        linha(CAMADA, 1, """
+                {"cod_imovel": "PR-001", "ano": "2026", "situacao": "ATIVO"}""");
+
+        validar();
+
+        assertThat(chaveNatural(CAMADA, 1)).isEqualTo("2026|PR-001");
+    }
+
     // ----- revalidar_registro (T6) ----------------------------------------------
 
     /** O operador corrigiu o payload: a revalidação usa o corrigido. */
@@ -899,6 +974,17 @@ class PkgQualityTest {
                  WHERE fonte_coluna_id = (SELECT fc.id FROM fonte_coluna fc
                                             JOIN fonte f ON f.id = fc.fonte_id
                                            WHERE f.sigla = 'TESTE' AND fc.nome_coluna = ?)""", tabela, coluna);
+    }
+
+    /** Chave de duas colunas: cod_imovel e ano, nas posições da fonte_coluna.ordem. */
+    private void chaveComAno(int ordemCodImovel, int ordemAno) {
+        coluna("ano");
+        regra("ano", "INTEIRO", 1, 1, null);
+        jdbc.update("""
+                UPDATE fonte_coluna SET ordem = CASE nome_coluna WHEN 'cod_imovel' THEN ? ELSE ? END
+                 WHERE nome_coluna IN ('cod_imovel', 'ano')
+                   AND fonte_id = (SELECT id FROM fonte WHERE sigla = 'TESTE')""",
+                ordemCodImovel, ordemAno);
     }
 
     // ----- execução e conferência -----------------------------------------------
