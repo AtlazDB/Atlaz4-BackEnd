@@ -49,7 +49,7 @@ class QuarentenaControllerTest {
                 List.of(new RevalidationError("CAMPO_OBRIGATORIO_AUSENTE", "cod_imovel", "Faltou.", null)),
                 registro));
 
-        String corpo = mockMvc.perform(post("/quarentena/1/revalidar"))
+        String corpo = mockMvc.perform(post("/api/v1/quarentena/1/revalidar"))
                 .andExpect(status().isOk())
                 .andReturn().getResponse().getContentAsString();
 
@@ -63,7 +63,7 @@ class QuarentenaControllerTest {
     void registroInexistenteResponde404ComMensagem() throws Exception {
         when(service.buscarPorId(99L)).thenThrow(new ResourceNotFoundException("Registro de quarentena não encontrado: 99"));
 
-        String corpo = mockMvc.perform(get("/quarentena/99"))
+        String corpo = mockMvc.perform(get("/api/v1/quarentena/99"))
                 .andExpect(status().isNotFound())
                 .andReturn().getResponse().getContentAsString();
 
@@ -74,7 +74,7 @@ class QuarentenaControllerTest {
     void registroEncerradoResponde409() throws Exception {
         when(service.revalidar(1L)).thenThrow(new QuarantineClosedException(1L, "DESCARTADO"));
 
-        mockMvc.perform(post("/quarentena/1/revalidar"))
+        mockMvc.perform(post("/api/v1/quarentena/1/revalidar"))
                 .andExpect(status().isConflict());
     }
 
@@ -84,7 +84,7 @@ class QuarentenaControllerTest {
                 .thenThrow(new RequisicaoInvalidaException("O payload corrigido precisa ser um objeto JSON.",
                         List.of("payloadCorrigido")));
 
-        mockMvc.perform(post("/quarentena/1/corrigir")
+        mockMvc.perform(post("/api/v1/quarentena/1/corrigir")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"payloadCorrigido\": \"não é json\"}"))
                 .andExpect(status().isBadRequest());
@@ -92,7 +92,7 @@ class QuarentenaControllerTest {
 
     @Test
     void descarteSemJustificativaResponde400SemChamarOService() throws Exception {
-        mockMvc.perform(post("/quarentena/1/descartar")
+        mockMvc.perform(post("/api/v1/quarentena/1/descartar")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"justificativa\": \"  \"}"))
                 .andExpect(status().isBadRequest());
@@ -104,7 +104,7 @@ class QuarentenaControllerTest {
     void geometriaDevolveGeoJson() throws Exception {
         when(service.buscarGeometria(1L)).thenReturn(Map.of("type", "Polygon"));
 
-        String corpo = mockMvc.perform(get("/quarentena/1/geometria"))
+        String corpo = mockMvc.perform(get("/api/v1/quarentena/1/geometria"))
                 .andExpect(status().isOk())
                 .andReturn().getResponse().getContentAsString();
 
@@ -117,7 +117,7 @@ class QuarentenaControllerTest {
     void semGeometriaResponde204() throws Exception {
         when(service.buscarGeometria(1L)).thenReturn(null);
 
-        mockMvc.perform(get("/quarentena/1/geometria"))
+        mockMvc.perform(get("/api/v1/quarentena/1/geometria"))
                 .andExpect(status().isNoContent());
     }
 }

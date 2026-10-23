@@ -139,7 +139,7 @@ public class ProcessamentoCarServiceImpl implements ProcessamentoCarService {
 
         void descarregar(long datasetVersaoId, long execucaoId) {
             gravador.gravarImoveis(datasetVersaoId, aprovados);
-            gravador.gravarQuarentena(execucaoId, reprovados);
+            gravador.gravarQuarentena(execucaoId, datasetVersaoId, GravadorImoveis.ENTIDADE, reprovados);
             aprovados.clear();
             reprovados.clear();
         }

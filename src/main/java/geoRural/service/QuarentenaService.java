@@ -5,10 +5,13 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import geoRural.dto.*;
 import geoRural.entity.RegistroQuarentena;
+import geoRural.exception.GravacaoNaoPermitidaException;
 import geoRural.exception.QuarantineClosedException;
 import geoRural.exception.RequisicaoInvalidaException;
 import geoRural.exception.ResourceNotFoundException;
 import geoRural.repository.RegistroQuarentenaRepository;
+import jakarta.persistence.EntityManager;
+import org.springframework.dao.DataAccessException;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.jdbc.core.ConnectionCallback;
@@ -17,6 +20,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.sql.CallableStatement;
+import java.sql.SQLException;
 import java.sql.Types;
 import java.time.OffsetDateTime;
 import java.util.List;
@@ -27,19 +31,22 @@ import java.util.Set;
 public class QuarentenaService {
 
     // Status em que a análise já acabou: nenhuma ação muda mais o registro.
-    private static final Set<String> STATUS_ENCERRADOS = Set.of("DESCARTADO", "REVALIDADO");
+    private static final Set<String> STATUS_ENCERRADOS = Set.of("DESCARTADO", "REVALIDADO", "SUBSTITUIDO");
 
     private final RegistroQuarentenaRepository repository;
     private final JdbcTemplate jdbcTemplate;
     private final ObjectMapper objectMapper;
     private final GeoJsonService geoJsonService;
+    private final EntityManager entityManager;
 
     public QuarentenaService(RegistroQuarentenaRepository repository, JdbcTemplate jdbcTemplate,
-                             ObjectMapper objectMapper, GeoJsonService geoJsonService) {
+                             ObjectMapper objectMapper, GeoJsonService geoJsonService,
+                             EntityManager entityManager) {
         this.repository = repository;
         this.jdbcTemplate = jdbcTemplate;
         this.objectMapper = objectMapper;
         this.geoJsonService = geoJsonService;
+        this.entityManager = entityManager;
     }
 
     public Page<RegistroQuarentena> listar(QuarentenaFiltroDTO filtro, Pageable pageable) {
@@ -91,9 +98,11 @@ public class QuarentenaService {
         long corrigidos = repository.countByStatusAnalise("CORRIGIDO");
         long descartados = repository.countByStatusAnalise("DESCARTADO");
         long revalidados = repository.countByStatusAnalise("REVALIDADO");
+        long substituidos = repository.countByStatusAnalise("SUBSTITUIDO");
         long total = repository.count();
 
-        return new QuarentenaMetricasDTO(pendentes, emAnalise, corrigidos, descartados, revalidados, total);
+        return new QuarentenaMetricasDTO(pendentes, emAnalise, corrigidos, descartados, revalidados,
+                substituidos, total);
     }
 
     @Transactional
@@ -132,12 +141,41 @@ public class QuarentenaService {
 
         // Reprovado: continua na quarentena como está; a tela mostra os erros.
         if (result.approved()) {
-            // Falta o pkg_tratada.gravar_registro (Leandro) gravar na Tratada antes de marcar.
-            registro.setStatusAnalise("REVALIDADO");
-            registro.setAnalisadoEm(OffsetDateTime.now());
-            registro = repository.save(registro);
+            // O pkg_tratada grava na Zona Tratada (o mesmo MERGE da carga) e marca o registro
+            // como REVALIDADO, nesta mesma transação. Relê o registro para trazer o que ele gravou.
+            gravarNaTratada(id);
+            entityManager.refresh(registro);
         }
         return new RevalidationResponse(result.status(), result.errors(), registro);
+    }
+
+    /** Chama pkg_tratada.gravar_registro. As recusas do pacote (ORA-20010 a 20014) viram 409. */
+    private void gravarNaTratada(Long id) {
+        try {
+            jdbcTemplate.update("BEGIN pkg_tratada.gravar_registro(?); END;", id);
+        } catch (DataAccessException e) {
+            SQLException sql = sqlException(e);
+            if (sql != null && sql.getErrorCode() >= 20010 && sql.getErrorCode() <= 20014) {
+                throw new GravacaoNaoPermitidaException(mensagemDoPacote(sql.getMessage()));
+            }
+            throw e;
+        }
+    }
+
+    /** A SQLException com o código do Oracle. Fica no meio da cadeia: o driver ainda põe a dele embaixo. */
+    private static SQLException sqlException(Throwable erro) {
+        for (Throwable t = erro; t != null; t = t.getCause()) {
+            if (t instanceof SQLException sql) {
+                return sql;
+            }
+        }
+        return null;
+    }
+
+    /** "ORA-20014: Uma carga mais recente... (e as linhas ORA-06512)" → só o texto escrito pelo pacote. */
+    static String mensagemDoPacote(String mensagem) {
+        String primeiraLinha = mensagem.lines().findFirst().orElse(mensagem);
+        return primeiraLinha.replaceFirst("^ORA-\\d+:\\s*", "").trim();
     }
 
     /** Chama pkg_quality.revalidar_registro, que só valida e devolve o JSON, sem gravar. */

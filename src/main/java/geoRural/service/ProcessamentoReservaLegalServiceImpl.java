@@ -132,7 +132,7 @@ public class ProcessamentoReservaLegalServiceImpl implements ProcessamentoReserv
 
         void descarregar() {
             gravadorRl.gravar(versaoId, aprovados);
-            gravador.gravarQuarentena(execucaoId, reprovados);
+            gravador.gravarQuarentena(execucaoId, versaoId, GravadorReservaLegal.ENTIDADE, reprovados);
             aprovados.clear();
             reprovados.clear();
         }
