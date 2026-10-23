@@ -731,6 +731,84 @@ class PkgQualityTest {
         assertThat(chaveNatural(CAMADA, 1)).isEqualTo("2026|PR-001");
     }
 
+    // ----- teste final (T8) -------------------------------------------------------
+
+    /**
+     * Uma execução com todas as regras ligadas: uma linha certa e uma linha para cada código
+     * da V10, cada uma com exatamente o seu erro. Fica de fora o GEOMETRIA_TIPO_INCOMPATIVEL:
+     * a regra_campo ainda não diz qual tipo de geometria a fonte espera (a combinar).
+     */
+    @Test
+    void cadaRegraGeraOSeuCodigo() {
+        regraCpfCnpj();
+        regraReferencia("municipio", "municipio");
+        bloquearRegressao("area_ha");
+        regraGeometria(1, "QUARENTENA", 1);
+
+        linhaComPoligono(CAMADA, 1, """
+                {"cod_imovel": "PR-OK", "area_ha": "12.5", "situacao": "ATIVO",
+                 "documento": "529.982.247-25", "municipio": "Londrina"}""");
+        linhaComPoligono(CAMADA, 2, """
+                {"situacao": "ATIVO"}""");
+        linhaComPoligono(CAMADA, 3, """
+                {"cod_imovel": "   ", "situacao": "ATIVO"}""");
+        linhaComPoligono(CAMADA, 4, """
+                {"cod_imovel": "PR-TIPO", "area_ha": "abc", "situacao": "ATIVO"}""");
+        linhaComPoligono(CAMADA, 5, """
+                {"cod_imovel": "PR-DOMINIO", "situacao": "XPTO"}""");
+        linhaComPoligono(CAMADA, 6, """
+                {"cod_imovel": "PR-REFERENCIA", "situacao": "ATIVO", "municipio": "Cidade Inventada"}""");
+        // TESTE-001 (V3) tem area_ha = 100.5 na imovel_rural.
+        linhaComPoligono(CAMADA, 7, """
+                {"cod_imovel": "TESTE-001", "situacao": "ATIVO"}""");
+        linhaComPoligono(CAMADA, 8, """
+                {"cod_imovel": "PR-CPF", "situacao": "ATIVO", "documento": "111.111.111-11"}""");
+        linhaComPoligono(CAMADA, 9, """
+                {"cod_imovel": "PR-DUPLICADA", "situacao": "ATIVO"}""");
+        linhaComPoligono(CAMADA, 10, """
+                {"cod_imovel": "PR-DUPLICADA", "situacao": "ATIVO"}""");
+        linha(CAMADA, 11, """
+                {"cod_imovel": "PR-SEM-GEOMETRIA", "situacao": "ATIVO"}""");
+        linhaComWkb(CAMADA, 12, """
+                {"cod_imovel": "PR-WKB-QUEBRADO", "situacao": "ATIVO"}""",
+                "lixo".getBytes(StandardCharsets.UTF_8));
+        linhaComPoligonoInvalido(CAMADA, 13, """
+                {"cod_imovel": "PR-INVALIDA", "situacao": "ATIVO"}""");
+        // São Paulo, sem encostar no PR.
+        linhaComRetangulo(CAMADA, 14, """
+                {"cod_imovel": "PR-FORA", "situacao": "ATIVO"}""",
+                -46.70, -23.60, -46.65, -23.55);
+
+        validar();
+
+        assertThat(status(CAMADA, 1)).isEqualTo("APROVADO");
+        assertThat(erros(CAMADA, 2)).containsExactly("CAMPO_OBRIGATORIO_AUSENTE");
+        assertThat(erros(CAMADA, 3)).containsExactly("CAMPO_EM_BRANCO");
+        assertThat(erros(CAMADA, 4)).containsExactly("TIPO_DE_DADO_INVALIDO");
+        assertThat(erros(CAMADA, 5)).containsExactly("VALOR_FORA_DO_DOMINIO");
+        assertThat(erros(CAMADA, 6)).containsExactly("REFERENCIA_NAO_ENCONTRADA");
+        assertThat(erros(CAMADA, 7)).containsExactly("REGRESSAO_DE_VALOR");
+        assertThat(erros(CAMADA, 8)).containsExactly("CPF_CNPJ_INVALIDO");
+        assertThat(erros(CAMADA, 9)).containsExactly("CHAVE_NATURAL_DUPLICADA");
+        assertThat(erros(CAMADA, 10)).containsExactly("CHAVE_NATURAL_DUPLICADA");
+        assertThat(erros(CAMADA, 11)).containsExactly("GEOMETRIA_NULA");
+        assertThat(erros(CAMADA, 12)).containsExactly("GEOMETRIA_MALFORMADA");
+        assertThat(erros(CAMADA, 13)).containsExactly("GEOMETRIA_INVALIDA");
+        assertThat(erros(CAMADA, 14)).containsExactly("FORA_DO_RECORTE_TERRITORIAL");
+
+        // Os códigos que apareceram são exatamente os da tipo_erro: um código novo na V10
+        // sem regra no pacote quebra este teste.
+        List<String> esperados = jdbc.queryForList(
+                "SELECT codigo FROM tipo_erro WHERE codigo <> 'GEOMETRIA_TIPO_INCOMPATIVEL'", String.class);
+        List<String> gerados = jdbc.queryForList("""
+                SELECT DISTINCT e.tipo_erro
+                  FROM staging_erro e
+                  JOIN staging_registro s ON s.id = e.staging_id
+                 WHERE s.execucao_id = ?""", String.class, execucaoId);
+        assertThat(esperados).hasSize(12);
+        assertThat(gerados).containsExactlyInAnyOrderElementsOf(esperados);
+    }
+
     // ----- revalidar_registro (T6) ----------------------------------------------
 
     /** O operador corrigiu o payload: a revalidação usa o corrigido. */
