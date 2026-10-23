@@ -498,6 +498,164 @@ class PkgQualityTest {
         assertThat(status(CAMADA, 1)).isEqualTo("APROVADO");
     }
 
+    // ----- CPF/CNPJ (T4) ----------------------------------------------------------
+    // 529.982.247-25 (CPF) e 11.222.333/0001-81 (CNPJ) são válidos.
+
+    @Test
+    void cpfECnpjValidosComESemMascaraAprovam() {
+        regraCpfCnpj();
+        linha(CAMADA, 1, """
+                {"cod_imovel": "PR-001", "situacao": "ATIVO", "documento": "529.982.247-25"}""");
+        linha(CAMADA, 2, """
+                {"cod_imovel": "PR-002", "situacao": "ATIVO", "documento": "52998224725"}""");
+        linha(CAMADA, 3, """
+                {"cod_imovel": "PR-003", "situacao": "ATIVO", "documento": "11.222.333/0001-81"}""");
+
+        validar();
+
+        assertThat(status(CAMADA, 1)).isEqualTo("APROVADO");
+        assertThat(status(CAMADA, 2)).isEqualTo("APROVADO");
+        assertThat(status(CAMADA, 3)).isEqualTo("APROVADO");
+    }
+
+    @Test
+    void digitoVerificadorErradoReprova() {
+        regraCpfCnpj();
+        linha(CAMADA, 1, """
+                {"cod_imovel": "PR-001", "situacao": "ATIVO", "documento": "529.982.247-26"}""");
+        linha(CAMADA, 2, """
+                {"cod_imovel": "PR-002", "situacao": "ATIVO", "documento": "11.222.333/0001-80"}""");
+
+        validar();
+
+        assertThat(erros(CAMADA, 1)).containsExactly("CPF_CNPJ_INVALIDO");
+        assertThat(erros(CAMADA, 2)).containsExactly("CPF_CNPJ_INVALIDO");
+    }
+
+    /** 111.111.111-11 passa na conta, mas não é um CPF de verdade. */
+    @Test
+    void todosOsDigitosIguaisReprova() {
+        regraCpfCnpj();
+        linha(CAMADA, 1, """
+                {"cod_imovel": "PR-001", "situacao": "ATIVO", "documento": "111.111.111-11"}""");
+
+        validar();
+
+        assertThat(erros(CAMADA, 1)).containsExactly("CPF_CNPJ_INVALIDO");
+    }
+
+    /** Anonimizado (asteriscos), com letra ou com o tamanho errado: não dá para validar. */
+    @Test
+    void anonimizadoLetraOuTamanhoErradoReprova() {
+        regraCpfCnpj();
+        linha(CAMADA, 1, """
+                {"cod_imovel": "PR-001", "situacao": "ATIVO", "documento": "***.982.247-**"}""");
+        linha(CAMADA, 2, """
+                {"cod_imovel": "PR-002", "situacao": "ATIVO", "documento": "52998224725a"}""");
+        linha(CAMADA, 3, """
+                {"cod_imovel": "PR-003", "situacao": "ATIVO", "documento": "5299822472"}""");
+
+        validar();
+
+        assertThat(erros(CAMADA, 1)).containsExactly("CPF_CNPJ_INVALIDO");
+        assertThat(erros(CAMADA, 2)).containsExactly("CPF_CNPJ_INVALIDO");
+        assertThat(erros(CAMADA, 3)).containsExactly("CPF_CNPJ_INVALIDO");
+    }
+
+    /** Vazio é com o obrigatório: aqui a coluna não é obrigatória, então aprova. */
+    @Test
+    void documentoVazioNaoEConferido() {
+        regraCpfCnpj();
+        linha(CAMADA, 1, """
+                {"cod_imovel": "PR-001", "situacao": "ATIVO"}""");
+        linha(CAMADA, 2, """
+                {"cod_imovel": "PR-002", "situacao": "ATIVO", "documento": "N/A"}""");
+
+        validar();
+
+        assertThat(status(CAMADA, 1)).isEqualTo("APROVADO");
+        assertThat(status(CAMADA, 2)).isEqualTo("APROVADO");
+    }
+
+    // ----- integridade cruzada (T4) ---------------------------------------------
+    // No banco local, o PR é Londrina (V5, IBGE 4113700) e o imóvel é o TESTE-001 (V3).
+
+    @Test
+    void municipioPeloCodigoIbgeAprova() {
+        regraReferencia("municipio", "municipio");
+        linha(CAMADA, 1, """
+                {"cod_imovel": "PR-001", "situacao": "ATIVO", "municipio": "4113700"}""");
+
+        validar();
+
+        assertThat(status(CAMADA, 1)).isEqualTo("APROVADO");
+    }
+
+    /** O CAR traz o nome sem acento: a comparação ignora acento e maiúscula. */
+    @Test
+    void municipioPeloNomeIgnoraAcentoEMaiuscula() {
+        regraReferencia("municipio", "municipio");
+        linha(CAMADA, 1, """
+                {"cod_imovel": "PR-001", "situacao": "ATIVO", "municipio": "Londrina"}""");
+        linha(CAMADA, 2, """
+                {"cod_imovel": "PR-002", "situacao": "ATIVO", "municipio": "LONDRINA"}""");
+        linha(CAMADA, 3, """
+                {"cod_imovel": "PR-003", "situacao": "ATIVO", "municipio": "Londrína"}""");
+
+        validar();
+
+        assertThat(status(CAMADA, 1)).isEqualTo("APROVADO");
+        assertThat(status(CAMADA, 2)).isEqualTo("APROVADO");
+        assertThat(status(CAMADA, 3)).isEqualTo("APROVADO");
+    }
+
+    @Test
+    void municipioQueNaoExisteReprova() {
+        regraReferencia("municipio", "municipio");
+        linha(CAMADA, 1, """
+                {"cod_imovel": "PR-001", "situacao": "ATIVO", "municipio": "Cidade Inventada"}""");
+        linha(CAMADA, 2, """
+                {"cod_imovel": "PR-002", "situacao": "ATIVO", "municipio": "9999999"}""");
+
+        validar();
+
+        assertThat(erros(CAMADA, 1)).containsExactly("REFERENCIA_NAO_ENCONTRADA");
+        assertThat(erros(CAMADA, 2)).containsExactly("REFERENCIA_NAO_ENCONTRADA");
+    }
+
+    /** Pelo nome, só vale município do PR (nomes se repetem entre estados); pelo código, não importa. */
+    @Test
+    void municipioDeOutroEstadoSoPassaPeloCodigo() {
+        regraReferencia("municipio", "municipio");
+        semMunicipioDoPr();
+        linha(CAMADA, 1, """
+                {"cod_imovel": "PR-001", "situacao": "ATIVO", "municipio": "Londrina"}""");
+        linha(CAMADA, 2, """
+                {"cod_imovel": "PR-002", "situacao": "ATIVO", "municipio": "4113700"}""");
+
+        validar();
+
+        assertThat(erros(CAMADA, 1)).containsExactly("REFERENCIA_NAO_ENCONTRADA");
+        assertThat(status(CAMADA, 2)).isEqualTo("APROVADO");
+    }
+
+    @Test
+    void imovelPeloCodImovel() {
+        regraReferencia("imovel_origem", "imovel_rural");
+        linha(CAMADA, 1, """
+                {"cod_imovel": "PR-001", "situacao": "ATIVO", "imovel_origem": "TESTE-001"}""");
+        linha(CAMADA, 2, """
+                {"cod_imovel": "PR-002", "situacao": "ATIVO", "imovel_origem": "PR-INEXISTENTE"}""");
+        linha(CAMADA, 3, """
+                {"cod_imovel": "PR-003", "situacao": "ATIVO"}""");
+
+        validar();
+
+        assertThat(status(CAMADA, 1)).isEqualTo("APROVADO");
+        assertThat(erros(CAMADA, 2)).containsExactly("REFERENCIA_NAO_ENCONTRADA");
+        assertThat(status(CAMADA, 3)).isEqualTo("APROVADO");
+    }
+
     // ----- revalidar_registro (T6) ----------------------------------------------
 
     /** O operador corrigiu o payload: a revalidação usa o corrigido. */
@@ -719,6 +877,28 @@ class PkgQualityTest {
                  WHERE fonte_coluna_id = (SELECT fc.id FROM fonte_coluna fc
                                             JOIN fonte f ON f.id = fc.fonte_id
                                            WHERE f.sigla = 'TESTE' AND fc.nome_coluna = ?)""", coluna);
+    }
+
+    /** Coluna "documento" que confere CPF/CNPJ (validar_cpf_cnpj = 1). */
+    private void regraCpfCnpj() {
+        coluna("documento");
+        regra("documento", "TEXTO", 0, 0, null);
+        jdbc.update("""
+                UPDATE regra_campo SET validar_cpf_cnpj = 1
+                 WHERE fonte_coluna_id = (SELECT fc.id FROM fonte_coluna fc
+                                            JOIN fonte f ON f.id = fc.fonte_id
+                                           WHERE f.sigla = 'TESTE' AND fc.nome_coluna = 'documento')""");
+    }
+
+    /** Coluna de texto que confere a referência cruzada (municipio ou imovel_rural). */
+    private void regraReferencia(String coluna, String tabela) {
+        coluna(coluna);
+        regra(coluna, "TEXTO", 0, 0, null);
+        jdbc.update("""
+                UPDATE regra_campo SET referencia_cruzada = ?
+                 WHERE fonte_coluna_id = (SELECT fc.id FROM fonte_coluna fc
+                                            JOIN fonte f ON f.id = fc.fonte_id
+                                           WHERE f.sigla = 'TESTE' AND fc.nome_coluna = ?)""", tabela, coluna);
     }
 
     // ----- execução e conferência -----------------------------------------------
