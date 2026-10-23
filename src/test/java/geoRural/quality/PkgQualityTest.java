@@ -437,7 +437,75 @@ class PkgQualityTest {
         assertThat(erros(CAMADA, 1)).containsExactly("FORA_DO_RECORTE_TERRITORIAL");
     }
 
-    // ----- regressão (T4) -------------------------------------------------------
+    // ----- tipo de geometria ----------------------------------------------------
+    // O formato_origem da regra de geometria diz o tipo esperado; sem ele, polígono.
+
+    @Test
+    void pontoNumaFonteDePoligonoReprova() {
+        regraGeometria();
+        linhaComPonto(CAMADA, 1, """
+                {"cod_imovel": "PR-001", "area_ha": "12.5", "situacao": "ATIVO"}""", -51.17, -23.32);
+
+        validar();
+
+        assertThat(status(CAMADA, 1)).isEqualTo("REPROVADO");
+        assertThat(erros(CAMADA, 1)).containsExactly("GEOMETRIA_TIPO_INCOMPATIVEL");
+    }
+
+    /** O multi do mesmo tipo vale: um imóvel com duas partes é um multipolígono. */
+    @Test
+    void multipoligonoAprova() {
+        regraGeometria();
+        linhaComMultipoligono(CAMADA, 1, """
+                {"cod_imovel": "PR-001", "area_ha": "12.5", "situacao": "ATIVO"}""");
+
+        validar();
+
+        assertThat(status(CAMADA, 1)).isEqualTo("APROVADO");
+        assertThat(erros(CAMADA, 1)).isEmpty();
+    }
+
+    /** Tipo errado não passa pelo "fora do PR": um ponto em São Paulo só tem o erro de tipo. */
+    @Test
+    void tipoErradoNaoConfereOPr() {
+        regraGeometriaComRecortePr();
+        linhaComPonto(CAMADA, 1, """
+                {"cod_imovel": "PR-001", "area_ha": "12.5", "situacao": "ATIVO"}""", -46.68, -23.58);
+
+        validar();
+
+        assertThat(erros(CAMADA, 1)).containsExactly("GEOMETRIA_TIPO_INCOMPATIVEL");
+    }
+
+    @Test
+    void formatoPontoAceitaPontoEReprovaPoligono() {
+        regraGeometria();
+        formatoDaGeometria(" ponto ");
+        linhaComPonto(CAMADA, 1, """
+                {"cod_imovel": "PR-001", "area_ha": "12.5", "situacao": "ATIVO"}""", -51.17, -23.32);
+        linhaComPoligono(CAMADA, 2, """
+                {"cod_imovel": "PR-002", "area_ha": "8.0", "situacao": "ATIVO"}""");
+
+        validar();
+
+        assertThat(status(CAMADA, 1)).isEqualTo("APROVADO");
+        assertThat(erros(CAMADA, 2)).containsExactly("GEOMETRIA_TIPO_INCOMPATIVEL");
+    }
+
+    /** Texto desconhecido no formato_origem é erro de configuração: a execução falha. */
+    @Test
+    void formatoDesconhecidoFalhaAExecucao() {
+        regraGeometria();
+        formatoDaGeometria("CIRCULO");
+        linhaComPoligono(CAMADA, 1, """
+                {"cod_imovel": "PR-001", "area_ha": "12.5", "situacao": "ATIVO"}""");
+
+        assertThatThrownBy(this::validar)
+                .hasMessageContaining("ORA-20003")
+                .hasMessageContaining("CIRCULO");
+    }
+
+    // ----- regressão (T4)-------------------------------------------------------
     // O TESTE-001 da V3 já está na imovel_rural com area_ha = 100.5.
 
     @Test
@@ -735,8 +803,7 @@ class PkgQualityTest {
 
     /**
      * Uma execução com todas as regras ligadas: uma linha certa e uma linha para cada código
-     * da V10, cada uma com exatamente o seu erro. Fica de fora o GEOMETRIA_TIPO_INCOMPATIVEL:
-     * a regra_campo ainda não diz qual tipo de geometria a fonte espera (a combinar).
+     * da V10, cada uma com exatamente o seu erro.
      */
     @Test
     void cadaRegraGeraOSeuCodigo() {
@@ -778,6 +845,9 @@ class PkgQualityTest {
         linhaComRetangulo(CAMADA, 14, """
                 {"cod_imovel": "PR-FORA", "situacao": "ATIVO"}""",
                 -46.70, -23.60, -46.65, -23.55);
+        // A fonte espera polígono (formato_origem nulo).
+        linhaComPonto(CAMADA, 15, """
+                {"cod_imovel": "PR-PONTO", "situacao": "ATIVO"}""", -51.17, -23.32);
 
         validar();
 
@@ -795,17 +865,17 @@ class PkgQualityTest {
         assertThat(erros(CAMADA, 12)).containsExactly("GEOMETRIA_MALFORMADA");
         assertThat(erros(CAMADA, 13)).containsExactly("GEOMETRIA_INVALIDA");
         assertThat(erros(CAMADA, 14)).containsExactly("FORA_DO_RECORTE_TERRITORIAL");
+        assertThat(erros(CAMADA, 15)).containsExactly("GEOMETRIA_TIPO_INCOMPATIVEL");
 
         // Os códigos que apareceram são exatamente os da tipo_erro: um código novo na V10
         // sem regra no pacote quebra este teste.
-        List<String> esperados = jdbc.queryForList(
-                "SELECT codigo FROM tipo_erro WHERE codigo <> 'GEOMETRIA_TIPO_INCOMPATIVEL'", String.class);
+        List<String> esperados = jdbc.queryForList("SELECT codigo FROM tipo_erro", String.class);
         List<String> gerados = jdbc.queryForList("""
                 SELECT DISTINCT e.tipo_erro
                   FROM staging_erro e
                   JOIN staging_registro s ON s.id = e.staging_id
                  WHERE s.execucao_id = ?""", String.class, execucaoId);
-        assertThat(esperados).hasSize(12);
+        assertThat(esperados).hasSize(13);
         assertThat(gerados).containsExactlyInAnyOrderElementsOf(esperados);
     }
 
@@ -933,6 +1003,14 @@ class PkgQualityTest {
                  WHERE f.sigla = 'TESTE'""", obrigatorio, politica, recortarPr);
     }
 
+    /** Tipo esperado da geometria (formato_origem da regra). */
+    private void formatoDaGeometria(String formato) {
+        jdbc.update("""
+                UPDATE regra_campo SET formato_origem = ?
+                 WHERE tipo_dado = 'GEOMETRIA'
+                   AND fonte_id = (SELECT id FROM fonte WHERE sigla = 'TESTE')""", formato);
+    }
+
     /**
      * Tira o PR da municipio só dentro do teste (o rollback desfaz). UPDATE em vez de
      * DELETE porque o imóvel TESTE-001 da V5 aponta para Londrina.
@@ -971,6 +1049,28 @@ class PkgQualityTest {
                           SDO_ORDINATE_ARRAY(?, ?, ?, ?, ?, ?, ?, ?, ?, ?))))""",
                 execucaoId, camada, numero, atributosJson,
                 xMin, yMin, xMax, yMin, xMax, yMax, xMin, yMax, xMin, yMin);
+    }
+
+    /** Linha com um ponto (x = longitude, y = latitude), sem SRID no WKB. */
+    private void linhaComPonto(String camada, int numero, String atributosJson, double x, double y) {
+        jdbc.update("""
+                INSERT INTO staging_registro (execucao_id, camada, numero_linha, atributos, geometria_wkb)
+                VALUES (?, ?, ?, ?, SDO_UTIL.TO_WKBGEOMETRY(SDO_GEOMETRY(2001, NULL,
+                          SDO_POINT_TYPE(?, ?, NULL), NULL, NULL)))""",
+                execucaoId, camada, numero, atributosJson, x, y);
+    }
+
+    /** Linha com dois quadrados separados dentro do retângulo de Londrina (V5). */
+    private void linhaComMultipoligono(String camada, int numero, String atributosJson) {
+        jdbc.update("""
+                INSERT INTO staging_registro (execucao_id, camada, numero_linha, atributos, geometria_wkb)
+                VALUES (?, ?, ?, ?, SDO_UTIL.TO_WKBGEOMETRY(SDO_GEOMETRY(2007, NULL, NULL,
+                          SDO_ELEM_INFO_ARRAY(1, 1003, 1, 11, 1003, 1),
+                          SDO_ORDINATE_ARRAY(-51.20, -23.35, -51.18, -23.35, -51.18, -23.33,
+                                             -51.20, -23.33, -51.20, -23.35,
+                                             -51.15, -23.30, -51.13, -23.30, -51.13, -23.28,
+                                             -51.15, -23.28, -51.15, -23.30))))""",
+                execucaoId, camada, numero, atributosJson);
     }
 
     /** O mesmo quadrado, com um vértice repetido (erro 13356): inválido, mas corrigível. */

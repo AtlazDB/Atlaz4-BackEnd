@@ -5,6 +5,8 @@ CREATE OR REPLACE PACKAGE pkg_quality AS
   -- transação é a DAG.
   -- ORA-20001: a fonte confere se a geometria está no PR (recortar_pr = 1) e
   -- a malha municipal do PR ainda não foi carregada.
+  -- ORA-20003: o formato_origem da regra de geometria não é POLIGONO, PONTO
+  -- nem LINHA.
   PROCEDURE validate(p_execucao_id IN NUMBER);
 
   -- Converte o WKB da staging para SDO_GEOMETRY com SRID 4326 (a DAG já
@@ -129,7 +131,9 @@ CREATE OR REPLACE PACKAGE BODY pkg_quality AS
     v_geometry_required   NUMBER;
     v_geometry_policy     regra_campo.politica_geometria%TYPE;
     v_check_pr            regra_campo.recortar_pr%TYPE;
-    v_fixed               SDO_GEOMETRY;
+    v_geometry_type       regra_campo.formato_origem%TYPE;
+    v_gtype               PLS_INTEGER;
+    v_fixed              SDO_GEOMETRY;
     v_has_pr_city         NUMBER;
     v_invalid             VARCHAR2(400);
     v_exists              VARCHAR2(400);
@@ -148,10 +152,13 @@ CREATE OR REPLACE PACKAGE BODY pkg_quality AS
      WHERE e.id = p_execucao_id;
 
     -- Coluna de geometria da fonte, se houver. Uma só: a staging guarda uma
-    -- geometria por linha (geometria_wkb).
+    -- geometria por linha (geometria_wkb). O formato_origem diz o tipo esperado;
+    -- sem ele, polígono (imóvel rural).
     BEGIN
-      SELECT fc.nome_coluna, rc.obrigatorio, rc.politica_geometria, rc.recortar_pr
-        INTO v_geometry_column, v_geometry_required, v_geometry_policy, v_check_pr
+      SELECT fc.nome_coluna, rc.obrigatorio, rc.politica_geometria, rc.recortar_pr,
+             NVL(UPPER(TRIM(rc.formato_origem)), 'POLIGONO')
+        INTO v_geometry_column, v_geometry_required, v_geometry_policy, v_check_pr,
+             v_geometry_type
         FROM regra_campo rc
         JOIN fonte_coluna fc ON fc.id = rc.fonte_coluna_id
        WHERE rc.fonte_id = v_fonte_id
@@ -161,6 +168,21 @@ CREATE OR REPLACE PACKAGE BODY pkg_quality AS
       WHEN NO_DATA_FOUND THEN
         v_geometry_column := NULL;
     END;
+
+    -- Tipo esperado no SDO_GTYPE (último dígito): 1 ponto, 2 linha, 3 polígono.
+    -- O multi do mesmo tipo (5, 6, 7) também vale. Texto desconhecido é erro de
+    -- configuração: melhor falhar do que reprovar todas as linhas.
+    IF v_geometry_column IS NOT NULL THEN
+      v_gtype := CASE v_geometry_type
+                   WHEN 'PONTO'    THEN 1
+                   WHEN 'LINHA'    THEN 2
+                   WHEN 'POLIGONO' THEN 3
+                 END;
+      IF v_gtype IS NULL THEN
+        RAISE_APPLICATION_ERROR(-20003,
+          'formato_origem da geometria inválido: ' || v_geometry_type || ' (use POLIGONO, PONTO ou LINHA).');
+      END IF;
+    END IF;
 
     -- Trava: "fora do PR" compara a geometria com a malha municipal do IBGE.
     -- Sem nenhum município do PR carregado, todo imóvel seria reprovado e iria
@@ -361,6 +383,25 @@ CREATE OR REPLACE PACKAGE BODY pkg_quality AS
            AND NVL(DBMS_LOB.GETLENGTH(s.geometria_wkb), 0) = 0;
       END IF;
 
+      -- Converteu, mas não é do tipo esperado (ex.: ponto no lugar de polígono).
+      -- Essas ficam de fora da validação e do "fora do PR": já estão reprovadas e
+      -- não faz sentido corrigir ou conferir uma geometria do tipo errado.
+      INSERT INTO staging_erro (staging_id, tipo_erro, campo, motivo)
+      SELECT s.id, 'GEOMETRIA_TIPO_INCOMPATIVEL', v_geometry_column,
+             'Geometria do tipo '
+             || CASE s.geometria.GET_GTYPE()
+                  WHEN 1 THEN 'PONTO'  WHEN 5 THEN 'MULTIPONTO'
+                  WHEN 2 THEN 'LINHA'  WHEN 6 THEN 'MULTILINHA'
+                  WHEN 3 THEN 'POLIGONO' WHEN 7 THEN 'MULTIPOLIGONO'
+                  WHEN 4 THEN 'COLECAO'
+                  ELSE TO_CHAR(s.geometria.GET_GTYPE())
+                END
+             || '; esperado ' || v_geometry_type || '.'
+        FROM staging_registro s
+       WHERE s.execucao_id = p_execucao_id
+         AND s.geometria IS NOT NULL
+         AND s.geometria.GET_GTYPE() NOT IN (v_gtype, v_gtype + 4);
+
       -- Converteu, mas é inválida. A validação é uma consulta só para a execução
       -- inteira; o loop passa só pelas inválidas, que são poucas.
       FOR r IN (SELECT x.id, x.camada, x.numero_linha, x.chave_natural, x.geometria, x.resultado
@@ -368,7 +409,8 @@ CREATE OR REPLACE PACKAGE BODY pkg_quality AS
                                SDO_GEOM.VALIDATE_GEOMETRY_WITH_CONTEXT(s.geometria, c_tolerance) resultado
                           FROM staging_registro s
                          WHERE s.execucao_id = p_execucao_id
-                           AND s.geometria IS NOT NULL) x
+                           AND s.geometria IS NOT NULL
+                           AND s.geometria.GET_GTYPE() IN (v_gtype, v_gtype + 4)) x
                  WHERE x.resultado <> 'TRUE') LOOP
         -- CORRIGIR_E_REGISTRAR: só vale a correção que sai válida.
         v_fixed := NULL;
@@ -400,12 +442,14 @@ CREATE OR REPLACE PACKAGE BODY pkg_quality AS
       -- Fora do PR: reprova só a que não encosta em nenhum município do PR.
       -- Parcialmente fora aprova, sem recorte. As que já têm erro
       -- GEOMETRIA_INVALIDA ficam de fora: estão reprovadas e o SDO_ANYINTERACT pode falhar nelas.
+      -- As do tipo errado também (GEOMETRIA_TIPO_INCOMPATIVEL).
       IF v_check_pr = 1 THEN
         INSERT INTO staging_erro (staging_id, tipo_erro, campo, motivo)
         SELECT s.id, 'FORA_DO_RECORTE_TERRITORIAL', v_geometry_column, 'Geometria totalmente fora do Paraná.'
           FROM staging_registro s
          WHERE s.execucao_id = p_execucao_id
            AND s.geometria IS NOT NULL
+           AND s.geometria.GET_GTYPE() IN (v_gtype, v_gtype + 4)
            AND NOT EXISTS (SELECT 1
                              FROM staging_erro e
                             WHERE e.staging_id = s.id
