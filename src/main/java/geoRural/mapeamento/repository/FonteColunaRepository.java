@@ -6,6 +6,7 @@ import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
 import java.util.List;
+import java.util.Optional;
 
 public interface FonteColunaRepository extends JpaRepository<FonteColuna, Long> {
 
@@ -21,4 +22,11 @@ public interface FonteColunaRepository extends JpaRepository<FonteColuna, Long> 
              order by c.ordem, c.nomeColuna
             """)
     List<Object[]> listarComRegra(@Param("fonteId") Long fonteId);
+
+    /** A coluna só é devolvida se pertencer à fonte informada. */
+    @Query("""
+            select c from FonteColuna c
+            where c.id = :id and c.fonte.id = :fonteId
+            """)
+    Optional<FonteColuna> buscarDaFonte(@Param("id") Long id, @Param("fonteId") Long fonteId);
 }
