@@ -59,7 +59,7 @@ public class FonteController {
 
     @PostMapping("/testar-link")
     public ResponseEntity<Map<String, Object>> testarLink(@RequestBody java.util.Map<String, Object> payload) {
-        // Extrai a URL do JSON enviado pelo front-end
+        
         String urlOrigem = (String) payload.get("urlOrigem");
 
         if (urlOrigem == null || urlOrigem.isBlank()) {
@@ -69,7 +69,7 @@ public class FonteController {
             ));
         }
 
-        // Retorna o sucesso para o front-end exibir o aviso verde
+        
         return ResponseEntity.ok(java.util.Map.of(
             "sucesso", true,
             "mensagem", "Conexão validada com sucesso para a URL: " + urlOrigem
@@ -78,5 +78,14 @@ public class FonteController {
 
     private FonteResponse toResponse(Fonte fonte) {
         return new FonteResponse(fonte);
+    }
+
+    @PostMapping("/{id}/executar")
+    public ResponseEntity<java.util.Map<String, Object>> executarFonte(@PathVariable Long id) {
+        String resultado = fonteService.executarIngestao(id);
+        return ResponseEntity.ok(java.util.Map.of(
+            "sucesso", true,
+            "mensagem", resultado
+        ));
     }
 }
