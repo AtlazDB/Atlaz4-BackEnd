@@ -81,6 +81,17 @@ public class GravadorImoveis {
                 """, arquivoId) == 1;
     }
 
+    /**
+     * Devolve o arquivo para a fila do Airflow (status RECEBIDO), inclusive para reprocessar um
+     * PROCESSADO ou REJEITADO. Devolve false se ele estiver sendo processado agora.
+     */
+    public boolean marcarRecebido(long arquivoId) {
+        return jdbc.update("""
+                UPDATE arquivo_bruto SET status = 'RECEBIDO', processado_em = NULL
+                 WHERE id = ? AND status <> 'PROCESSANDO'
+                """, arquivoId) == 1;
+    }
+
     public long iniciarExecucao(long arquivoId) {
         return inserirComId("""
                 INSERT INTO execucao (arquivo_bruto_id, tipo, status)
