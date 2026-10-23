@@ -6,6 +6,7 @@ import geoRural.dto.DescarteRequestDTO;
 import geoRural.dto.QuarentenaFiltroDTO;
 import geoRural.dto.RevalidationError;
 import geoRural.dto.RevalidationResponse;
+import geoRural.exception.GravacaoNaoPermitidaException;
 import geoRural.exception.QuarantineClosedException;
 import geoRural.exception.RequisicaoInvalidaException;
 import geoRural.repository.RegistroQuarentenaRepository;
@@ -90,10 +91,17 @@ class QuarentenaServiceTest {
         assertThat(resultado.quarantine().getStatusAnalise()).isEqualTo("PENDENTE");
     }
 
+    /** Aprovado: o pkg_tratada grava o imóvel na Tratada, na versão da carga, e encerra o registro. */
     @Test
-    void revalidarAprovadoMarcaRevalidado() {
-        long id = quarentena("{\"area_ha\": \"12.5\"}");
-        service.corrigir(id, new CorrecaoRequestDTO("{\"cod_imovel\": \"PR-001\"}", "Faltava o código."));
+    void revalidarAprovadoGravaNaTratada() {
+        mapearGeometria();
+        jdbc.update("""
+                INSERT INTO dataset_versao (conjunto, versao, execucao_id, zona)
+                VALUES ('teste_quarentena', 1, ?, 'TRATADA')""", execucaoId);
+        long versaoId = jdbc.queryForObject(
+                "SELECT id FROM dataset_versao WHERE execucao_id = ?", Long.class, execucaoId);
+        long id = quarentenaComGeometria("{\"area_ha\": \"12.5\"}");
+        service.corrigir(id, new CorrecaoRequestDTO("{\"cod_imovel\": \"PR-TESTE-Q-001\"}", "Faltava o código."));
         // Na tela são duas requisições; aqui é uma transação só, e o pacote lê do banco.
         repository.flush();
 
@@ -103,6 +111,31 @@ class QuarentenaServiceTest {
         assertThat(resultado.errors()).isEmpty();
         assertThat(resultado.quarantine().getStatusAnalise()).isEqualTo("REVALIDADO");
         assertThat(resultado.quarantine().getAnalisadoEm()).isNotNull();
+        assertThat(resultado.quarantine().getDatasetVersaoId()).isEqualTo(versaoId);
+        assertThat(jdbc.queryForMap(
+                "SELECT estado, dataset_versao_id FROM imovel_rural WHERE cod_imovel = 'PR-TESTE-Q-001'"))
+                .containsEntry("ESTADO", "PR")
+                .hasEntrySatisfying("DATASET_VERSAO_ID", v -> assertThat(((Number) v).longValue()).isEqualTo(versaoId));
+    }
+
+    /** Aprovado na validação, mas a carga não criou versão: não há como gravar, e o registro não fecha. */
+    @Test
+    void revalidarAprovadoSemVersaoDeDadosRecusa() {
+        mapearGeometria();
+        long id = quarentenaComGeometria("{\"area_ha\": \"12.5\"}");
+        service.corrigir(id, new CorrecaoRequestDTO("{\"cod_imovel\": \"PR-TESTE-Q-002\"}", null));
+        repository.flush();
+
+        assertThatThrownBy(() -> service.revalidar(id))
+                .isInstanceOf(GravacaoNaoPermitidaException.class)
+                .hasMessageStartingWith("A carga que trouxe o registro não criou versão de dados");
+    }
+
+    @Test
+    void mensagemDoPacoteTiraOCodigoEAsLinhasDoOracle() {
+        assertThat(QuarentenaService.mensagemDoPacote(
+                "ORA-20014: Uma carga mais recente já atualizou.\nORA-06512: at \"GEO_RURAL.PKG_TRATADA\", line 230"))
+                .isEqualTo("Uma carga mais recente já atualizou.");
     }
 
     // ----- corrigir -------------------------------------------------------------
@@ -179,6 +212,27 @@ class QuarentenaServiceTest {
         jdbc.update("""
                 INSERT INTO registro_quarentena (execucao_id, numero_linha, motivo, payload)
                 VALUES (?, 1, 'teste da quarentena', ?)""", execucaoId, payload);
+        return ultimaQuarentena();
+    }
+
+    /** O imovel_rural exige geometria: sem ela no mapeamento, nada grava na Tratada. */
+    private void mapearGeometria() {
+        jdbc.update("INSERT INTO fonte_coluna (fonte_id, nome_coluna) VALUES (?, 'geometry')", fonteId);
+        jdbc.update("""
+                INSERT INTO regra_campo
+                  (fonte_id, fonte_coluna_id, destino_tabela, campo_destino, tipo_dado, obrigatorio,
+                   politica_geometria, recortar_pr)
+                SELECT ?, id, 'imovel_rural', 'geometria', 'GEOMETRIA', 1, 'QUARENTENA', 0
+                  FROM fonte_coluna WHERE fonte_id = ? AND nome_coluna = 'geometry'""", fonteId, fonteId);
+    }
+
+    private long quarentenaComGeometria(String payload) {
+        jdbc.update("""
+                INSERT INTO registro_quarentena (execucao_id, numero_linha, motivo, payload, geometria)
+                VALUES (?, 1, 'teste da quarentena', ?, SDO_GEOMETRY(2003, 4326, NULL,
+                          SDO_ELEM_INFO_ARRAY(1, 1003, 1),
+                          SDO_ORDINATE_ARRAY(-51.20, -23.35, -51.15, -23.35, -51.15, -23.30,
+                                             -51.20, -23.30, -51.20, -23.35)))""", execucaoId, payload);
         return ultimaQuarentena();
     }
 

@@ -41,6 +41,11 @@ public class GlobalExceptionHandler {
         return ResponseEntity.status(HttpStatus.CONFLICT).body(ErroResponse.de(ex.getMessage()));
     }
 
+    @ExceptionHandler(GravacaoNaoPermitidaException.class)
+    public ResponseEntity<ErroResponse> handleGravacaoNaoPermitida(GravacaoNaoPermitidaException ex) {
+        return ResponseEntity.status(HttpStatus.CONFLICT).body(ErroResponse.de(ex.getMessage()));
+    }
+
     @ExceptionHandler(CargaNaoPermitidaException.class)
     public ResponseEntity<ErroResponse> handleCargaNaoPermitida(CargaNaoPermitidaException ex) {
         return ResponseEntity.status(HttpStatus.CONFLICT).body(ErroResponse.de(ex.getMessage()));
