@@ -133,6 +133,10 @@ CREATE OR REPLACE PACKAGE BODY pkg_quality AS
     v_has_pr_city         NUMBER;
     v_invalid             VARCHAR2(400);
     v_exists              VARCHAR2(400);
+    v_key_part            VARCHAR2(400);
+    v_key_expr            VARCHAR2(4000);
+    v_key_filled          VARCHAR2(4000);
+    v_key_names           VARCHAR2(4000);
     v_key_table          regra_campo.destino_tabela%TYPE;
     v_key_column          regra_campo.campo_destino%TYPE;
   BEGIN
@@ -246,35 +250,47 @@ CREATE OR REPLACE PACKAGE BODY pkg_quality AS
         USING r.nome_coluna, 'Valor não converte para ' || r.tipo_dado || '.', p_execucao_id;
     END LOOP;
 
-    -- Chave duplicada: o mesmo valor de chave em mais de uma linha da execução.
-    -- Reprova todas as repetidas (não dá para saber qual está certa).
-    -- Supõe chave de uma coluna só: confirmar com o Rocha.
+    -- Chave natural: os valores das colunas de chave juntos com "|", na ordem
+    -- da fonte_coluna. Com uma coluna só, é o próprio valor (é por ele que a
+    -- DAG, a regressão e o pkg_tratada acham o registro). Vai também nas
+    -- linhas reprovadas. Fica nula quando falta alguma parte: a V9 exige que
+    -- a coluna de chave seja obrigatória, então o obrigatório já reprova a linha.
     -- Vem antes da geometria: a correcao_automatica grava a chave_natural.
     FOR r IN (SELECT fc.nome_coluna
                 FROM regra_campo rc
                 JOIN fonte_coluna fc ON fc.id = rc.fonte_coluna_id
                WHERE rc.fonte_id = v_fonte_id
-                 AND rc.chave = 1) LOOP
-      EXECUTE IMMEDIATE
-        'INSERT INTO staging_erro (staging_id, tipo_erro, campo, motivo, valor_recebido)
-         SELECT x.id, ''CHAVE_NATURAL_DUPLICADA'', :campo, ''Chave repetida em mais de uma linha do arquivo.'', SUBSTR(x.valor, 1, 1000)
-           FROM (SELECT y.id, y.valor, COUNT(*) OVER (PARTITION BY y.valor) qtd
-                   FROM (SELECT s.id, TRIM(JSON_VALUE(s.atributos, ' || json_path(r.nome_coluna) || ')) valor
-                           FROM staging_registro s
-                          WHERE s.execucao_id = :execucao) y) x
-          WHERE x.valor IS NOT NULL
-            AND x.qtd > 1'
-        USING r.nome_coluna, p_execucao_id;
+                 AND rc.chave = 1
+               ORDER BY fc.ordem NULLS LAST, fc.nome_coluna) LOOP
+      v_key_part := 'TRIM(JSON_VALUE(s.atributos, ' || json_path(r.nome_coluna) || '))';
+      v_key_expr := CASE WHEN v_key_expr IS NULL THEN v_key_part
+                         ELSE v_key_expr || ' || ''|'' || ' || v_key_part END;
+      v_key_filled := CASE WHEN v_key_filled IS NOT NULL THEN v_key_filled || ' AND ' END
+                      || v_key_part || ' IS NOT NULL';
+      v_key_names := CASE WHEN v_key_names IS NOT NULL THEN v_key_names || ', ' END
+                     || r.nome_coluna;
+    END LOOP;
 
-      -- Chave natural: o valor da coluna de chave, para a DAG e a quarentena
-      -- acharem o registro. Vai também nas linhas reprovadas.
-      -- Corta em 80 (tamanho da coluna) até o Rocha confirmar se a chave pode ser composta.
+    IF v_key_expr IS NOT NULL THEN
       EXECUTE IMMEDIATE
         'UPDATE staging_registro s
-            SET s.chave_natural = SUBSTR(TRIM(JSON_VALUE(s.atributos, ' || json_path(r.nome_coluna) || ')), 1, 80)
+            SET s.chave_natural = CASE WHEN ' || v_key_filled || '
+                                       THEN SUBSTR(' || v_key_expr || ', 1, 400) END
           WHERE s.execucao_id = :execucao'
         USING p_execucao_id;
-    END LOOP;
+
+      -- Chave duplicada: a mesma chave em mais de uma linha da execução.
+      -- Reprova todas as repetidas (não dá para saber qual está certa).
+      INSERT INTO staging_erro (staging_id, tipo_erro, campo, motivo, valor_recebido)
+      SELECT x.id, 'CHAVE_NATURAL_DUPLICADA', SUBSTR(v_key_names, 1, 128),
+             'Chave repetida em mais de uma linha do arquivo.', x.chave_natural
+        FROM (SELECT s.id, s.chave_natural,
+                     COUNT(*) OVER (PARTITION BY s.chave_natural) qtd
+                FROM staging_registro s
+               WHERE s.execucao_id = p_execucao_id
+                 AND s.chave_natural IS NOT NULL) x
+       WHERE x.qtd > 1;
+    END IF;
 
     -- Regressão: campo preenchido na carga anterior que chegou vazio (Leandro).
     -- Acha o registro anterior pela chave_natural na tabela de destino da
