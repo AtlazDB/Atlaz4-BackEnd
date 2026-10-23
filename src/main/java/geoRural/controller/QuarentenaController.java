@@ -10,7 +10,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
 @RestController
-@RequestMapping("/quarentena")
+@RequestMapping("/api/v1/quarentena")
 public class QuarentenaController {
 
     private final QuarentenaService service;
