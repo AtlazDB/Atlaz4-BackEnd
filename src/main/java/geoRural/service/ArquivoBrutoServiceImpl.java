@@ -75,12 +75,7 @@ public class ArquivoBrutoServiceImpl implements ArquivoBrutoService {
             throw new FormatoArquivoNaoAceitoException(extensao, EXTENSOES_ACEITAS);
         }
 
-        String chave = String.format("%s/%s/%s/%s_%s",
-                zonaBruta,
-                fonte.getSigla(),
-                LocalDate.now(ZoneOffset.UTC),
-                UUID.randomUUID().toString().substring(0, 8),
-                nomeOriginal);
+        String chave = chaveNaZonaBruta(zonaBruta, fonte.getSigla(), nomeOriginal);
 
         MessageDigest sha256 = sha256();
         try (InputStream in = new DigestInputStream(arquivo.getInputStream(), sha256)) {
@@ -143,6 +138,24 @@ public class ArquivoBrutoServiceImpl implements ArquivoBrutoService {
         } catch (RuntimeException e) {
             log.warn("Arquivo {} excluído do catálogo, mas o objeto {} ficou no bucket", arquivoId, chave, e);
         }
+    }
+
+    /**
+     * bruta/SIGLA/AAAA-MM-DD/uuid8_nome: o prefixo aleatório impede que um arquivo sobrescreva
+     * outro na zona bruta, que é imutável. Usado pelo upload e pela coleta por link.
+     */
+    static String chaveNaZonaBruta(String zonaBruta, String sigla, String nomeOriginal) {
+        return String.format("%s/%s/%s/%s_%s",
+                zonaBruta,
+                sigla,
+                LocalDate.now(ZoneOffset.UTC),
+                UUID.randomUUID().toString().substring(0, 8),
+                nomeOriginal);
+    }
+
+    /** As extensões que a zona bruta aceita, no upload e na coleta por link. */
+    static List<String> extensoesAceitas() {
+        return EXTENSOES_ACEITAS;
     }
 
     private static String extensao(String nome) {
