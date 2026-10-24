@@ -1,6 +1,9 @@
 package geoRural.entity;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import jakarta.persistence.*;
+import org.locationtech.jts.geom.Geometry;
+
 import java.time.OffsetDateTime;
 
 @Entity
@@ -11,10 +14,32 @@ public class RegistroQuarentena {
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
+    // Colunas da V1: de onde o registro veio e o que ele trazia.
+    @Column(name = "EXECUCAO_ID", nullable = false)
+    private Long execucaoId;
+
+    @Column(name = "NUMERO_LINHA")
+    private Long numeroLinha;
+
+    @Column(name = "CAMPO", length = 128)
+    private String campo;
+
+    @Column(name = "MOTIVO", nullable = false, length = 400)
+    private String motivo;
+
+    @Lob
+    @Column(name = "PAYLOAD")
+    private String payload;
+
+    // Fora do JSON da listagem: a tela pede pelo GET /quarentena/{id}/geometria, já em GeoJSON.
+    @JsonIgnore
+    @Column(name = "GEOMETRIA", columnDefinition = "SDO_GEOMETRY")
+    private Geometry geometria;
+
     @Column(name = "ENTIDADE", length = 80)
     private String entidade;
 
-    @Column(name = "CHAVE_NATURAL", length = 100)
+    @Column(name = "CHAVE_NATURAL", length = 400)
     private String chaveNatural;
 
     @Column(name = "TIPO_ERRO", length = 40)
@@ -45,6 +70,24 @@ public class RegistroQuarentena {
     // Getters e Setters
     public Long getId() { return id; }
     public void setId(Long id) { this.id = id; }
+
+    public Long getExecucaoId() { return execucaoId; }
+    public void setExecucaoId(Long execucaoId) { this.execucaoId = execucaoId; }
+
+    public Long getNumeroLinha() { return numeroLinha; }
+    public void setNumeroLinha(Long numeroLinha) { this.numeroLinha = numeroLinha; }
+
+    public String getCampo() { return campo; }
+    public void setCampo(String campo) { this.campo = campo; }
+
+    public String getMotivo() { return motivo; }
+    public void setMotivo(String motivo) { this.motivo = motivo; }
+
+    public String getPayload() { return payload; }
+    public void setPayload(String payload) { this.payload = payload; }
+
+    public Geometry getGeometria() { return geometria; }
+    public void setGeometria(Geometry geometria) { this.geometria = geometria; }
 
     public String getEntidade() { return entidade; }
     public void setEntidade(String entidade) { this.entidade = entidade; }

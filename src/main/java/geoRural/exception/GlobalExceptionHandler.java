@@ -31,6 +31,21 @@ public class GlobalExceptionHandler {
         return ResponseEntity.status(HttpStatus.NOT_FOUND).body(ErroResponse.de(ex.getMessage()));
     }
 
+    @ExceptionHandler(ResourceNotFoundException.class)
+    public ResponseEntity<ErroResponse> handleRecursoNaoEncontrado(ResourceNotFoundException ex) {
+        return ResponseEntity.status(HttpStatus.NOT_FOUND).body(ErroResponse.de(ex.getMessage()));
+    }
+
+    @ExceptionHandler(QuarantineClosedException.class)
+    public ResponseEntity<ErroResponse> handleQuarentenaEncerrada(QuarantineClosedException ex) {
+        return ResponseEntity.status(HttpStatus.CONFLICT).body(ErroResponse.de(ex.getMessage()));
+    }
+
+    @ExceptionHandler(GravacaoNaoPermitidaException.class)
+    public ResponseEntity<ErroResponse> handleGravacaoNaoPermitida(GravacaoNaoPermitidaException ex) {
+        return ResponseEntity.status(HttpStatus.CONFLICT).body(ErroResponse.de(ex.getMessage()));
+    }
+
     @ExceptionHandler(CargaNaoPermitidaException.class)
     public ResponseEntity<ErroResponse> handleCargaNaoPermitida(CargaNaoPermitidaException ex) {
         return ResponseEntity.status(HttpStatus.CONFLICT).body(ErroResponse.de(ex.getMessage()));
@@ -70,5 +85,20 @@ public class GlobalExceptionHandler {
     public ResponseEntity<ErroResponse> handleArquivoGrande(MaxUploadSizeExceededException ex) {
         return ResponseEntity.status(HttpStatus.PAYLOAD_TOO_LARGE)
                 .body(ErroResponse.de("Arquivo maior que o limite de 500 MB."));
+    }
+
+    @ExceptionHandler(ColunaNaoEncontradaException.class)
+    public ResponseEntity<ErroResponse> handleColunaNaoEncontrada(ColunaNaoEncontradaException ex) {
+        return ResponseEntity.status(HttpStatus.NOT_FOUND).body(ErroResponse.de(ex.getMessage()));
+    }
+
+    @ExceptionHandler(MapeamentoNaoEncontradoException.class)
+    public ResponseEntity<ErroResponse> handleMapeamentoNaoEncontrado(MapeamentoNaoEncontradoException ex) {
+        return ResponseEntity.status(HttpStatus.NOT_FOUND).body(ErroResponse.de(ex.getMessage()));
+    }
+
+    @ExceptionHandler(MapeamentoDuplicadoException.class)
+    public ResponseEntity<ErroResponse> handleMapeamentoDuplicado(MapeamentoDuplicadoException ex) {
+        return ResponseEntity.status(HttpStatus.CONFLICT).body(ErroResponse.de(ex.getMessage()));
     }
 }

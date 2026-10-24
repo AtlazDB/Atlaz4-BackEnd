@@ -16,6 +16,9 @@ public class GravadorReservaLegal {
 
     public static final String CONJUNTO = "reserva_legal";
 
+    /** Tabela de destino gravada na quarentena (registro_quarentena.entidade). */
+    public static final String ENTIDADE = "car_reserva_legal";
+
     private static final String SQL_INSERT = """
             INSERT INTO car_reserva_legal (cod_imovel, municipio, area_ha, situacao, geometria, dataset_versao_id)
             VALUES (?, ?, ?, ?, SDO_GEOMETRY(?, 4326), ?)

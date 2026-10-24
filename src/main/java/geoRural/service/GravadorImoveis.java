@@ -1,12 +1,17 @@
 package geoRural.service;
 
 import java.io.ByteArrayInputStream;
+import java.sql.CallableStatement;
 import java.sql.PreparedStatement;
 import java.sql.Types;
 import java.util.List;
 import java.util.Optional;
 
+import org.locationtech.jts.geom.Geometry;
 import org.locationtech.jts.io.WKBWriter;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.jdbc.core.ConnectionCallback;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.support.GeneratedKeyHolder;
 import org.springframework.jdbc.support.KeyHolder;
@@ -24,7 +29,12 @@ import geoRural.service.ValidadorImovel.Resultado;
 @Component
 public class GravadorImoveis {
 
+    private static final Logger log = LoggerFactory.getLogger(GravadorImoveis.class);
+
     public static final String CONJUNTO = "imoveis_rurais";
+
+    /** Tabela de destino gravada na quarentena (registro_quarentena.entidade), a mesma da regra_campo. */
+    public static final String ENTIDADE = "imovel_rural";
 
     /** O que o processamento precisa saber do arquivo, sem passar pelo JPA (funciona fora da requisição). */
     public record ArquivoParaProcessar(long id, String chaveObjeto, String nomeOriginal,
@@ -46,9 +56,11 @@ public class GravadorImoveis {
                          s.geometria, s.dataset_versao_id)
             """;
 
+    // pkg_quality.to_geometry: WKB → SDO_GEOMETRY 4326, e NULL para WKB nulo ou quebrado.
     private static final String SQL_QUARENTENA = """
-            INSERT INTO registro_quarentena (execucao_id, numero_linha, campo, motivo, payload)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO registro_quarentena (execucao_id, numero_linha, campo, motivo, payload,
+                   entidade, chave_natural, tipo_erro, valor_recebido, dataset_versao_id, geometria)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, pkg_quality.to_geometry(?))
             """;
 
     private final JdbcTemplate jdbc;
@@ -77,6 +89,17 @@ public class GravadorImoveis {
     public boolean marcarProcessando(long arquivoId) {
         return jdbc.update("""
                 UPDATE arquivo_bruto SET status = 'PROCESSANDO', processado_em = NULL
+                 WHERE id = ? AND status <> 'PROCESSANDO'
+                """, arquivoId) == 1;
+    }
+
+    /**
+     * Devolve o arquivo para a fila do Airflow (status RECEBIDO), inclusive para reprocessar um
+     * PROCESSADO ou REJEITADO. Devolve false se ele estiver sendo processado agora.
+     */
+    public boolean marcarRecebido(long arquivoId) {
+        return jdbc.update("""
+                UPDATE arquivo_bruto SET status = 'RECEBIDO', processado_em = NULL
                  WHERE id = ? AND status <> 'PROCESSANDO'
                 """, arquivoId) == 1;
     }
@@ -125,18 +148,35 @@ public class GravadorImoveis {
 
     /**
      * Grava um lote de reprovados. O payload leva as colunas do .dbf, sem a geometria (pode ter
-     * milhares de pontos). Para ver a geometria, use a linha no arquivo da zona bruta, que é imutável.
+     * milhares de pontos); a geometria vai na coluna própria, como chegou, para o visualizador da
+     * quarentena e para o "Revalidar". {@code entidade} é a tabela de destino (imovel_rural,
+     * car_reserva_legal) e {@code datasetVersaoId} a versão da carga, que o pkg_tratada usa.
      */
-    public void gravarQuarentena(long execucaoId, List<Resultado> reprovados) {
+    public void gravarQuarentena(long execucaoId, long datasetVersaoId, String entidade, List<Resultado> reprovados) {
         if (reprovados.isEmpty()) {
             return;
         }
+        WKBWriter wkbWriter = new WKBWriter();
         jdbc.batchUpdate(SQL_QUARENTENA, reprovados, reprovados.size(), (PreparedStatement ps, Resultado r) -> {
+            String motivo = r.motivoQuarentena();
+            String cod = r.imovel().codImovel();
             ps.setLong(1, execucaoId);
             ps.setInt(2, r.imovel().linha());
-            ps.setString(3, campo(r.motivoQuarentena()));
-            ps.setString(4, r.motivoQuarentena());
+            ps.setString(3, campo(motivo));
+            ps.setString(4, motivo);
             ps.setString(5, json(r));
+            ps.setString(6, entidade);
+            ps.setString(7, limitar(cod, 100));
+            ps.setString(8, tipoErro(motivo));
+            ps.setString(9, motivo.startsWith("cod_imovel") ? limitar(cod, 4000) : null);
+            ps.setLong(10, datasetVersaoId);
+            Geometry g = geometriaRecebida(r.imovel().geometria());
+            if (g == null) {
+                ps.setNull(11, Types.BLOB);
+            } else {
+                byte[] wkb = wkbWriter.write(g);
+                ps.setBlob(11, new ByteArrayInputStream(wkb), wkb.length);
+            }
         });
     }
 
@@ -148,10 +188,32 @@ public class GravadorImoveis {
                  WHERE id = ?
                 """, lidos, validos, invalidos, execucaoId);
         jdbc.update("UPDATE dataset_versao SET registros = ? WHERE id = ?", validos, datasetVersaoId);
+        int substituidos = substituirPendentes(execucaoId);
+        if (substituidos > 0) {
+            log.info("Execução {}: {} registros abertos de cargas anteriores substituídos na quarentena",
+                    execucaoId, substituidos);
+        }
         jdbc.update("""
                 UPDATE arquivo_bruto SET status = 'PROCESSADO', processado_em = SYSTIMESTAMP
                  WHERE id = ?
                 """, arquivoId);
+    }
+
+    /**
+     * Encerra como SUBSTITUIDO os registros ainda abertos que esta carga resolveu (mesmo arquivo
+     * reprocessado, ou o mesmo código de novo): reprocessar não duplica a fila da quarentena.
+     * A regra fica no pkg_tratada, a mesma que a DAG do Airflow chama.
+     */
+    public int substituirPendentes(long execucaoId) {
+        Integer total = jdbc.execute((ConnectionCallback<Integer>) con -> {
+            try (CallableStatement cs = con.prepareCall("{? = call pkg_tratada.substituir_pendentes(?)}")) {
+                cs.registerOutParameter(1, Types.NUMERIC);
+                cs.setLong(2, execucaoId);
+                cs.execute();
+                return cs.getInt(1);
+            }
+        });
+        return total == null ? 0 : total;
     }
 
     /** Para conjuntos que acumulam (focos): a versão registra só o que trouxe de novo. */
@@ -198,6 +260,39 @@ public class GravadorImoveis {
             return "area_ha";
         }
         return "geometria";
+    }
+
+    /** Código da V10 (tabela tipo_erro) pelo começo do motivo; null quando não há um equivalente. */
+    static String tipoErro(String motivo) {
+        if (motivo.startsWith("cod_imovel vazio") || motivo.startsWith("num_area vazio")) {
+            return "CAMPO_OBRIGATORIO_AUSENTE";
+        }
+        if (motivo.startsWith("cod_imovel duplicado")) {
+            return "CHAVE_NATURAL_DUPLICADA";
+        }
+        if (motivo.startsWith("sem geometria")) {
+            return "GEOMETRIA_NULA";
+        }
+        if (motivo.startsWith("geometria não é polígono")) {
+            return "GEOMETRIA_TIPO_INCOMPATIVEL";
+        }
+        if (motivo.startsWith("geometria inválida") || motivo.startsWith("geometria irreparável")) {
+            return "GEOMETRIA_INVALIDA";
+        }
+        return null;
+    }
+
+    /**
+     * A geometria do registro reprovado, como chegou. Se ela for válida (o registro caiu por outro
+     * motivo, como o código duplicado), já vai no sentido que o Oracle exige, para o "Revalidar"
+     * conseguir gravá-la; se não for, vai como está, para o operador ver o problema no mapa.
+     */
+    static Geometry geometriaRecebida(Geometry original) {
+        if (original == null || original.isEmpty()) {
+            return null;
+        }
+        Geometry pronta = ValidadorImovel.prepararGeometria(original);
+        return pronta != null ? pronta : original;
     }
 
     /** UF pelo prefixo do código do CAR: "PR-4113700-..." → "PR". */

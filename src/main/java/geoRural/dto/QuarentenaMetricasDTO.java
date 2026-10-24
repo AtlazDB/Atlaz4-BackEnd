@@ -6,6 +6,7 @@ public record QuarentenaMetricasDTO(
     long corrigidos,
     long descartados,
     long revalidados,
+    long substituidos,
     long total
 ) {}
 

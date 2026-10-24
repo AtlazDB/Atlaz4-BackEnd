@@ -17,11 +17,14 @@ public interface RegistroQuarentenaRepository extends JpaRepository<RegistroQuar
           AND (:status IS NULL OR q.statusAnalise = :status)
           AND (:texto IS NULL OR LOWER(q.chaveNatural) LIKE LOWER(CONCAT('%', :texto, '%')) 
                OR LOWER(q.valorRecebido) LIKE LOWER(CONCAT('%', :texto, '%')))
+          AND (:fonteId IS NULL OR q.execucaoId IN (
+               SELECT e.id FROM Execucao e WHERE e.arquivoBruto.fonte.id = :fonteId))
     """)
     Page<RegistroQuarentena> buscarComFiltros(
         @Param("tipoErro") String tipoErro,
         @Param("status") String status,
         @Param("texto") String texto,
+        @Param("fonteId") Long fonteId,
         Pageable pageable
     );
 
