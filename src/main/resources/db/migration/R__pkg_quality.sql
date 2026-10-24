@@ -19,8 +19,18 @@ CREATE OR REPLACE PACKAGE pkg_quality AS
   -- validate a chama dentro de um SELECT.
   FUNCTION valid_cpf_cnpj(p_value IN VARCHAR2) RETURN NUMBER;
 
-  -- Valida de novo um registro da quarentena (com o payload corrigido, se
-  -- houver) e devolve o resultado em JSON: {"status": ..., "erros": [...]}.
+  -- 'TRUE' se a geometria é válida na tolerância do validate; senão o
+  -- código e o contexto do Oracle (ex.: '13349 [Element <1>] [Ring <1>]...').
+  -- Pública para a tela da quarentena conferir a geometria editada à mão.
+  FUNCTION validate_geometry(p_geom IN SDO_GEOMETRY) RETURN VARCHAR2;
+
+  -- A correção automática do validate (CORRIGIR_E_REGISTRAR): RECTIFY e só
+  -- vale se a corrigida sair válida. NULL quando não dá para corrigir.
+  -- Pública para a tela da quarentena sugerir a correção.
+  FUNCTION fix_geometry(p_geom IN SDO_GEOMETRY) RETURN SDO_GEOMETRY;
+
+  -- Valida de novo um registro da quarentena (com o payload e a geometria
+  -- corrigidos, se houver) e devolve o resultado em JSON: {"status": ..., "erros": [...]}.
   -- Não grava nada: desfaz tudo antes de devolver.
   -- ORA-20002: registro de quarentena não encontrado.
   FUNCTION revalidar_registro(p_quarentena_id IN NUMBER) RETURN CLOB;
@@ -76,6 +86,21 @@ CREATE OR REPLACE PACKAGE BODY pkg_quality AS
     WHEN OTHERS THEN
       RETURN NULL;
   END rectify;
+
+  FUNCTION validate_geometry(p_geom IN SDO_GEOMETRY) RETURN VARCHAR2 IS
+  BEGIN
+    RETURN SDO_GEOM.VALIDATE_GEOMETRY_WITH_CONTEXT(p_geom, c_tolerance);
+  END validate_geometry;
+
+  FUNCTION fix_geometry(p_geom IN SDO_GEOMETRY) RETURN SDO_GEOMETRY IS
+    v_fixed SDO_GEOMETRY;
+  BEGIN
+    v_fixed := rectify(p_geom);
+    IF v_fixed IS NOT NULL AND validate_geometry(v_fixed) <> 'TRUE' THEN
+      RETURN NULL;
+    END IF;
+    RETURN v_fixed;
+  END fix_geometry;
 
   FUNCTION valid_cpf_cnpj(p_value IN VARCHAR2) RETURN NUMBER IS
     v_digits  VARCHAR2(20);
@@ -415,11 +440,7 @@ CREATE OR REPLACE PACKAGE BODY pkg_quality AS
         -- CORRIGIR_E_REGISTRAR: só vale a correção que sai válida.
         v_fixed := NULL;
         IF v_geometry_policy = 'CORRIGIR_E_REGISTRAR' THEN
-          v_fixed := rectify(r.geometria);
-          IF v_fixed IS NOT NULL
-             AND SDO_GEOM.VALIDATE_GEOMETRY_WITH_CONTEXT(v_fixed, c_tolerance) <> 'TRUE' THEN
-            v_fixed := NULL;
-          END IF;
+          v_fixed := fix_geometry(r.geometria);
         END IF;
 
         IF v_fixed IS NOT NULL THEN
@@ -568,8 +589,9 @@ CREATE OR REPLACE PACKAGE BODY pkg_quality AS
                 'REVALIDACAO',
                 NVL(v_q.numero_linha, 0),
                 NVL(v_q.payload_corrigido, v_q.payload),
-                CASE WHEN v_q.geometria IS NOT NULL
-                     THEN SDO_UTIL.TO_WKBGEOMETRY(v_q.geometria) END)
+                -- A corrigida pelo operador, se houver; senão a que chegou.
+                CASE WHEN NVL(v_q.geometria_corrigida, v_q.geometria) IS NOT NULL
+                     THEN SDO_UTIL.TO_WKBGEOMETRY(NVL(v_q.geometria_corrigida, v_q.geometria)) END)
         RETURNING id INTO v_staging_id;
 
         -- Parte C: valida e monta o JSON com o status e os erros.

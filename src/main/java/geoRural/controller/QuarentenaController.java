@@ -50,6 +50,26 @@ public class QuarentenaController {
         return geometria == null ? ResponseEntity.noContent().build() : ResponseEntity.ok(geometria);
     }
 
+    /** GeoJSON da geometria salva pelo operador; 204 enquanto não houver correção. */
+    @GetMapping("/{id}/geometria-corrigida")
+    public ResponseEntity<Map<String, Object>> buscarGeometriaCorrigida(@PathVariable Long id) {
+        Map<String, Object> geometria = service.findCorrectedGeometry(id);
+        return geometria == null ? ResponseEntity.noContent().build() : ResponseEntity.ok(geometria);
+    }
+
+    /** Prévia da correção automática, em GeoJSON. Não grava nada. */
+    @PostMapping("/{id}/geometria/correcao-automatica")
+    public ResponseEntity<Map<String, Object>> sugerirCorrecaoGeometria(@PathVariable Long id) {
+        return ResponseEntity.ok(service.suggestGeometryFix(id));
+    }
+
+    @PutMapping("/{id}/geometria-corrigida")
+    public ResponseEntity<RegistroQuarentena> salvarGeometriaCorrigida(
+            @PathVariable Long id,
+            @Valid @RequestBody GeometryCorrectionRequest dto) {
+        return ResponseEntity.ok(service.saveCorrectedGeometry(id, dto));
+    }
+
     @PostMapping("/{id}/iniciar-analise")
     public ResponseEntity<RegistroQuarentena> iniciarAnalise(@PathVariable Long id) {
         return ResponseEntity.ok(service.iniciarAnalise(id));

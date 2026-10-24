@@ -55,6 +55,11 @@ public class RegistroQuarentena {
     @Column(name = "PAYLOAD_CORRIGIDO")
     private String payloadCorrigido;
 
+    // Também fora do JSON: GET /quarentena/{id}/geometria-corrigida, em GeoJSON.
+    @JsonIgnore
+    @Column(name = "GEOMETRIA_CORRIGIDA", columnDefinition = "SDO_GEOMETRY")
+    private Geometry geometriaCorrigida;
+
     @Column(name = "JUSTIFICATIVA", length = 1000)
     private String justificativa;
 
@@ -106,6 +111,9 @@ public class RegistroQuarentena {
 
     public String getPayloadCorrigido() { return payloadCorrigido; }
     public void setPayloadCorrigido(String payloadCorrigido) { this.payloadCorrigido = payloadCorrigido; }
+
+    public Geometry getGeometriaCorrigida() { return geometriaCorrigida; }
+    public void setGeometriaCorrigida(Geometry geometriaCorrigida) { this.geometriaCorrigida = geometriaCorrigida; }
 
     public String getJustificativa() { return justificativa; }
     public void setJustificativa(String justificativa) { this.justificativa = justificativa; }
