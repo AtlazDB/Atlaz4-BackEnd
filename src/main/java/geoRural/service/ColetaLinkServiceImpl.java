@@ -1,8 +1,5 @@
 package geoRural.service;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.core.type.TypeReference;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import geoRural.dto.ColetaResponse;
 import geoRural.entity.ArquivoBruto;
 import geoRural.entity.Fonte;
@@ -18,25 +15,19 @@ import java.io.FilterInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.URI;
-import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
-import java.net.http.HttpTimeoutException;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.security.DigestInputStream;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
-import java.time.Duration;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Locale;
-import java.util.Map;
 import java.util.Optional;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -58,7 +49,6 @@ public class ColetaLinkServiceImpl implements ColetaLinkService {
 
     private static final Logger log = LoggerFactory.getLogger(ColetaLinkServiceImpl.class);
 
-    private static final int MAX_REDIRECIONAMENTOS = 5;
     private static final Pattern NOME_NO_CABECALHO = Pattern.compile("filename\\*?=(?:UTF-8'')?\"?([^\";]+)\"?",
             Pattern.CASE_INSENSITIVE);
     private static final DateTimeFormatter CARIMBO = DateTimeFormatter.ofPattern("yyyyMMdd-HHmm");
@@ -66,11 +56,8 @@ public class ColetaLinkServiceImpl implements ColetaLinkService {
     private final FonteService fonteService;
     private final ArquivoBrutoRepository repository;
     private final ObjectStorageService objectStorageService;
-    private final ValidadorUrlExterna validador;
-    private final ObjectMapper objectMapper;
-    private final HttpClient cliente;
+    private final ClienteHttpExterno cliente;
     private final long limiteBytes;
-    private final Duration esperaResposta;
 
     @Value("${oci.zona-bruta}")
     private String zonaBruta;
@@ -78,22 +65,13 @@ public class ColetaLinkServiceImpl implements ColetaLinkService {
     public ColetaLinkServiceImpl(FonteService fonteService,
                                  ArquivoBrutoRepository repository,
                                  ObjectStorageService objectStorageService,
-                                 ValidadorUrlExterna validador,
-                                 ObjectMapper objectMapper,
-                                 @Value("${app.coleta.limite-bytes:2147483648}") long limiteBytes,
-                                 @Value("${app.coleta.espera-resposta-segundos:120}") long esperaRespostaSegundos) {
+                                 ClienteHttpExterno cliente,
+                                 @Value("${app.coleta.limite-bytes:2147483648}") long limiteBytes) {
         this.fonteService = fonteService;
         this.repository = repository;
         this.objectStorageService = objectStorageService;
-        this.validador = validador;
-        this.objectMapper = objectMapper;
+        this.cliente = cliente;
         this.limiteBytes = limiteBytes;
-        this.esperaResposta = Duration.ofSeconds(esperaRespostaSegundos);
-        // Redirecionamento à mão: cada destino passa de novo pelo validador.
-        this.cliente = HttpClient.newBuilder()
-                .connectTimeout(Duration.ofSeconds(30))
-                .followRedirects(HttpClient.Redirect.NEVER)
-                .build();
     }
 
     @Override
@@ -150,86 +128,24 @@ public class ColetaLinkServiceImpl implements ColetaLinkService {
     private record Download(String nome, String contentType, long tamanho, String hash) {}
 
     private Download baixar(Fonte fonte, Path destino) throws IOException, InterruptedException {
-        URI uri = validador.validar(fonte.getUrlOrigem());
-        String metodo = "POST".equalsIgnoreCase(fonte.getMetodoHttp()) ? "POST" : "GET";
+        HttpResponse<InputStream> resposta = cliente.abrir(new ClienteHttpExterno.Pedido(
+                fonte.getUrlOrigem(), fonte.getMetodoHttp(), fonte.getCabecalhos(), fonte.getCorpoRequisicao()));
 
-        for (int saltos = 0; ; saltos++) {
-            HttpResponse<InputStream> resposta;
-            try {
-                resposta = cliente.send(pedido(fonte, uri, metodo), HttpResponse.BodyHandlers.ofInputStream());
-            } catch (HttpTimeoutException e) {
-                throw new ColetaFalhouException("O servidor de origem demorou demais para responder.", e);
-            }
-            int codigo = resposta.statusCode();
-            Optional<String> destinoRedirecionado = resposta.headers().firstValue("Location");
-
-            if (codigo >= 300 && codigo < 400 && destinoRedirecionado.isPresent()) {
-                resposta.body().close();
-                if (saltos >= MAX_REDIRECIONAMENTOS) {
-                    throw new ColetaFalhouException("O link redirecionou mais de " + MAX_REDIRECIONAMENTOS + " vezes.");
-                }
-                uri = validador.validar(uri.resolve(destinoRedirecionado.get()).toString());
-                // 301, 302 e 303 viram GET, como fazem os navegadores; 307 e 308 mantêm o método.
-                metodo = (codigo == 307 || codigo == 308) ? metodo : "GET";
-                continue;
-            }
-            if (codigo < 200 || codigo >= 300) {
-                resposta.body().close();
-                throw new ColetaFalhouException("O servidor de origem respondeu HTTP " + codigo + ".");
-            }
-
-            MessageDigest sha256 = sha256();
-            long tamanho;
-            try (InputStream in = new DigestInputStream(new Limitado(resposta.body(), limiteBytes), sha256)) {
-                tamanho = Files.copy(in, destino, StandardCopyOption.REPLACE_EXISTING);
-            }
-            if (tamanho == 0) {
-                throw new ColetaFalhouException("O servidor de origem respondeu sem conteúdo.");
-            }
-
-            String contentType = resposta.headers().firstValue("Content-Type")
-                    .map(tipo -> tipo.split(";")[0].trim().toLowerCase(Locale.ROOT))
-                    .orElse("application/octet-stream");
-            String nome = nomeDoArquivo(uri, resposta.headers().firstValue("Content-Disposition").orElse(null),
-                    contentType, fonte);
-            return new Download(nome, contentType, tamanho, HexFormat.of().formatHex(sha256.digest()));
+        MessageDigest sha256 = sha256();
+        long tamanho;
+        try (InputStream in = new DigestInputStream(new Limitado(resposta.body(), limiteBytes), sha256)) {
+            tamanho = Files.copy(in, destino, StandardCopyOption.REPLACE_EXISTING);
         }
-    }
-
-    private HttpRequest pedido(Fonte fonte, URI uri, String metodo) {
-        HttpRequest.Builder pedido = HttpRequest.newBuilder(uri)
-                .timeout(esperaResposta)
-                // Alguns servidores do governo recusam o agente padrão do Java.
-                .header("User-Agent", "GeoRural-DataHub/1.0 (coleta de dados abertos)");
-
-        for (Map.Entry<String, String> cabecalho : cabecalhos(fonte).entrySet()) {
-            try {
-                pedido.header(cabecalho.getKey(), cabecalho.getValue());
-            } catch (IllegalArgumentException e) {
-                throw new RequisicaoInvalidaException(
-                        "O cabeçalho \"" + cabecalho.getKey() + "\" não pode ser enviado.", List.of("cabecalhos"));
-            }
+        if (tamanho == 0) {
+            throw new ColetaFalhouException("O servidor de origem respondeu sem conteúdo.");
         }
 
-        if ("POST".equals(metodo)) {
-            String corpo = fonte.getCorpoRequisicao() == null ? "" : fonte.getCorpoRequisicao();
-            return pedido.POST(HttpRequest.BodyPublishers.ofString(corpo, StandardCharsets.UTF_8)).build();
-        }
-        return pedido.GET().build();
-    }
-
-    private Map<String, String> cabecalhos(Fonte fonte) {
-        String json = fonte.getCabecalhos();
-        if (json == null || json.isBlank()) {
-            return Map.of();
-        }
-        try {
-            return objectMapper.readValue(json, new TypeReference<Map<String, String>>() {});
-        } catch (JsonProcessingException e) {
-            throw new RequisicaoInvalidaException(
-                    "Os cabeçalhos da fonte precisam ser um objeto JSON, como {\"Accept\": \"application/json\"}.",
-                    List.of("cabecalhos"));
-        }
+        String contentType = resposta.headers().firstValue("Content-Type")
+                .map(tipo -> tipo.split(";")[0].trim().toLowerCase(Locale.ROOT))
+                .orElse("application/octet-stream");
+        String nome = nomeDoArquivo(resposta.uri(), resposta.headers().firstValue("Content-Disposition").orElse(null),
+                contentType, fonte);
+        return new Download(nome, contentType, tamanho, HexFormat.of().formatHex(sha256.digest()));
     }
 
     /**
