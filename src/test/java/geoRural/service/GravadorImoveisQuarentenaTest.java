@@ -140,6 +140,40 @@ class GravadorImoveisQuarentenaTest {
         assertThat(status(outroCodigo)).isEqualTo("PENDENTE");
     }
 
+    /**
+     * Chave composta (duas colunas com chave = 1): a chave da Tratada é montada como a
+     * chave_natural do pkg_quality, "cod|municipio" na ordem da fonte_coluna.
+     */
+    @Test
+    void chaveCompostaTambemSubstitui() {
+        jdbc.update("""
+                INSERT INTO fonte (nome, sigla, orgao, formato)
+                VALUES ('Fonte com chave composta', 'TESTE_CK', 'Teste', 'SHP')""");
+        long fonteId = jdbc.queryForObject("SELECT id FROM fonte WHERE sigla = 'TESTE_CK'", Long.class);
+        // municipio vem antes na ordem: a chave é "Londrina|PR-TESTE-CK-1"
+        jdbc.update("INSERT INTO fonte_coluna (fonte_id, nome_coluna, ordem) VALUES (?, 'cod', 2)", fonteId);
+        jdbc.update("INSERT INTO fonte_coluna (fonte_id, nome_coluna, ordem) VALUES (?, 'mun', 1)", fonteId);
+        jdbc.update("""
+                INSERT INTO regra_campo (fonte_id, fonte_coluna_id, destino_tabela, campo_destino, tipo_dado, obrigatorio, chave)
+                SELECT fonte_id, id, 'imovel_rural',
+                       CASE nome_coluna WHEN 'cod' THEN 'cod_imovel' ELSE 'municipio' END, 'TEXTO', 1, 1
+                  FROM fonte_coluna WHERE fonte_id = ?""", fonteId);
+
+        long antiga = execucaoDaFonte(fonteId, "antigo.zip");
+        gravador.criarVersao(antiga, "teste_chave_composta");
+        long mesmaChave = quarentenaComChave(antiga, "Londrina|PR-TESTE-CK-1");
+        long outraChave = quarentenaComChave(antiga, "Maringá|PR-TESTE-CK-1");
+
+        long nova = execucaoDaFonte(fonteId, "novo.zip");
+        long novaVersao = gravador.criarVersao(nova, "teste_chave_composta").id();
+        gravador.gravarImoveis(novaVersao, List.of(
+                new ValidadorImovel().validar(imovel(1, "PR-TESTE-CK-1", quadrado()))));  // município Londrina
+
+        assertThat(gravador.substituirPendentes(nova)).isEqualTo(1);
+        assertThat(status(mesmaChave)).isEqualTo("SUBSTITUIDO");
+        assertThat(status(outraChave)).isEqualTo("PENDENTE");
+    }
+
     @Test
     void motivoViraOCodigoDaV10() {
         assertThat(GravadorImoveis.tipoErro("cod_imovel vazio")).isEqualTo("CAMPO_OBRIGATORIO_AUSENTE");
@@ -158,6 +192,23 @@ class GravadorImoveisQuarentenaTest {
                 List.of(validador.validar(imovel(2, cod, quadrado()))));
         return jdbc.queryForObject("SELECT MAX(id) FROM registro_quarentena WHERE chave_natural = ?",
                 Long.class, cod);
+    }
+
+    private long execucaoDaFonte(long fonteId, String nome) {
+        String chave = "teste/chave-composta/" + nome;
+        jdbc.update("""
+                INSERT INTO arquivo_bruto (fonte_id, chave_objeto, nome_original, tamanho_bytes, hash_sha256)
+                VALUES (?, ?, ?, 1, 'teste')""", fonteId, chave, nome);
+        return gravador.iniciarExecucao(
+                jdbc.queryForObject("SELECT id FROM arquivo_bruto WHERE chave_objeto = ?", Long.class, chave));
+    }
+
+    private long quarentenaComChave(long execucao, String chaveNatural) {
+        jdbc.update("""
+                INSERT INTO registro_quarentena (execucao_id, numero_linha, motivo, payload, entidade, chave_natural)
+                VALUES (?, 1, 'teste da chave composta', '{}', 'imovel_rural', ?)""", execucao, chaveNatural);
+        return jdbc.queryForObject("SELECT MAX(id) FROM registro_quarentena WHERE chave_natural = ?",
+                Long.class, chaveNatural);
     }
 
     private String status(long quarentenaId) {
