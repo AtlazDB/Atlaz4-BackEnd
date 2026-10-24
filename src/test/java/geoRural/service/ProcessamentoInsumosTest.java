@@ -38,6 +38,7 @@ import java.util.zip.ZipOutputStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.tuple;
 import static org.mockito.Mockito.when;
 
 /**
@@ -135,6 +136,21 @@ class ProcessamentoInsumosTest {
         assertThat(resposta.registrosForaDoRecorte()).isEqualTo(1);
         assertThat(jdbc.queryForList("SELECT id_inpe FROM foco_calor WHERE id_inpe LIKE 'teste-foco-%' ORDER BY id_inpe",
                 String.class)).containsExactly("teste-foco-1", "teste-foco-2");
+
+        List<Map<String, Object>> quarentena = jdbc.queryForList("""
+                SELECT q.chave_natural, q.entidade, q.tipo_erro, q.valor_recebido, q.dataset_versao_id,
+                       CASE WHEN q.geometria IS NULL THEN 0 ELSE 1 END tem_geometria
+                  FROM registro_quarentena q JOIN execucao e ON e.id = q.execucao_id
+                 WHERE e.arquivo_bruto_id = ? ORDER BY q.chave_natural""", arquivo);
+        assertThat(quarentena).extracting(l -> l.get("CHAVE_NATURAL"), l -> l.get("TIPO_ERRO"), l -> l.get("VALOR_RECEBIDO"))
+                .containsExactly(
+                        tuple("teste-foco-4", "TIPO_DE_DADO_INVALIDO", "10/09/2026"),
+                        tuple("teste-foco-5", "FORA_DO_RECORTE_TERRITORIAL", "lat=-12.000000, lon=-50.130000"));
+        assertThat(quarentena).allSatisfy(l -> {
+            assertThat(l.get("ENTIDADE")).isEqualTo("foco_calor");
+            assertThat(l.get("DATASET_VERSAO_ID")).isNotNull();
+            assertThat(((Number) l.get("TEM_GEOMETRIA")).intValue()).isEqualTo(1);
+        });
     }
 
     @Test
