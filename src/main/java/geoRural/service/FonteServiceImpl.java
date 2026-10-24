@@ -9,11 +9,6 @@ import geoRural.repository.FonteRepository;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import javax.net.ssl.SSLContext;
-import javax.net.ssl.TrustManager;
-import javax.net.ssl.X509TrustManager;
-import java.security.SecureRandom;
-import java.security.cert.X509Certificate;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -95,76 +90,5 @@ public class FonteServiceImpl implements FonteService {
 
     private static boolean vazio(String s) {
         return s == null || s.isBlank();
-    }
-
-    @Override
-    public String executarIngestao(Long id) {
-        Fonte fonte = buscarPorId(id);
-
-        if (fonte.getUrlOrigem() == null || fonte.getUrlOrigem().isBlank()) {
-            throw new RequisicaoInvalidaException("A fonte selecionada não possui uma URL de origem configurada.", List.of("urlOrigem"));
-        }
-
-        try {
-            java.net.URL url = new java.net.URL(fonte.getUrlOrigem());
-            javax.net.ssl.HttpsURLConnection conn = (javax.net.ssl.HttpsURLConnection) url.openConnection();
-
-            // Configura TrustManager para ignorar barreiras estritas de certificado em ambiente de governo/dev
-            javax.net.ssl.TrustManager[] trustAllCerts = new javax.net.ssl.TrustManager[]{
-                new javax.net.ssl.X509TrustManager() {
-                    public java.security.cert.X509Certificate[] getAcceptedIssuers() { return null; }
-                    public void checkClientTrusted(java.security.cert.X509Certificate[] certs, String authType) {}
-                    public void checkServerTrusted(java.security.cert.X509Certificate[] certs, String authType) {}
-                }
-            };
-
-            javax.net.ssl.SSLContext sc = javax.net.ssl.SSLContext.getInstance("TLS");
-            sc.init(null, trustAllCerts, new java.security.SecureRandom());
-            conn.setSSLSocketFactory(sc.getSocketFactory());
-            conn.setHostnameVerifier((hostname, session) -> true);
-
-            String metodo = "POST".equalsIgnoreCase(fonte.getMetodoHttp()) ? "POST" : "GET";
-            conn.setRequestMethod(metodo);
-            conn.setConnectTimeout(30000);
-            conn.setReadTimeout(60000);
-
-            if ("POST".equals(metodo)) {
-                conn.setDoOutput(true);
-                String corpo = fonte.getCorpoRequisicao() != null ? fonte.getCorpoRequisicao() : "";
-                try (java.io.OutputStream os = conn.getOutputStream()) {
-                    byte[] input = corpo.getBytes(java.nio.charset.StandardCharsets.UTF_8);
-                    os.write(input, 0, input.length);
-                }
-            }
-
-            int responseCode = conn.getResponseCode();
-            
-            // Lê o conteúdo da resposta (ou stream de erro se houver)
-            java.io.InputStream inputStream = (responseCode >= 200 && responseCode < 300) 
-                    ? conn.getInputStream() 
-                    : conn.getErrorStream();
-
-            String respostaTexto = "";
-            if (inputStream != null) {
-                try (java.io.BufferedReader br = new java.io.BufferedReader(new java.io.InputStreamReader(inputStream, java.nio.charset.StandardCharsets.UTF_8))) {
-                    StringBuilder sb = new StringBuilder();
-                    String line;
-                    while ((line = br.readLine()) != null) {
-                        sb.append(line);
-                    }
-                    respostaTexto = sb.toString();
-                }
-            }
-
-            if (responseCode >= 200 && responseCode < 300) {
-                return "Ingestão executada com sucesso! Status HTTP: " + responseCode 
-                       + " | Tamanho da resposta: " + respostaTexto.length() + " caracteres.";
-            } else {
-                throw new RuntimeException("O servidor externo respondeu com erro. Status HTTP: " + responseCode + " - " + respostaTexto);
-            }
-
-        } catch (Exception e) {
-            throw new RuntimeException("Falha ao executar a ingestão da fonte: " + e.getMessage());
-        }
     }
 }

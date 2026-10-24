@@ -13,6 +13,5 @@ public interface FonteService {
 
     Fonte buscarPorId(Long id);
 
-    String executarIngestao(Long id);
 
 }

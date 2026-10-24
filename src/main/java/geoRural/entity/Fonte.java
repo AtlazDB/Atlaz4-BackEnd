@@ -1,6 +1,9 @@
 package geoRural.entity;
 
 import jakarta.persistence.*;
+import org.hibernate.annotations.CreationTimestamp;
+import org.hibernate.type.NumericBooleanConverter;
+
 import java.time.OffsetDateTime;
 
 @Entity
@@ -11,26 +14,28 @@ public class Fonte {
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
-    @Column(nullable = false)
+    @Column(name = "NOME", nullable = false)
     private String nome;
 
-    @Column(nullable = false, unique = true)
+    @Column(name = "SIGLA", nullable = false, unique = true)
     private String sigla;
 
-    @Column(nullable = false)
+    @Column(name = "ORGAO", nullable = false)
     private String orgao;
 
-    @Column(nullable = false)
+    @Column(name = "FORMATO", nullable = false)
     private String formato;
 
-    @Column(nullable = false)
+    @Column(name = "PERIODICIDADE", nullable = false)
     private String periodicidade;
 
-    @Column(nullable = false)
+    @Convert(converter = NumericBooleanConverter.class)
+    @Column(name = "ATIVA", nullable = false)
     private boolean ativa = true;
 
-    @Column(name = "CRIADA_EM", nullable = false)
-    private OffsetDateTime criadaEm = OffsetDateTime.now();
+    @CreationTimestamp
+    @Column(name = "CRIADA_EM", nullable = false, updatable = false)
+    private OffsetDateTime criadaEm;
 
     // --- NOVOS CAMPOS (Task T1 - Ingestão por Link e Execução) ---
 
@@ -85,7 +90,6 @@ public class Fonte {
     public void setAtiva(boolean ativa) { this.ativa = ativa; }
 
     public OffsetDateTime getCriadaEm() { return criadaEm; }
-    public void setCriadaEm(OffsetDateTime criadaEm) { this.criadaEm = criadaEm; }
 
     public String getModalidade() { return modalidade; }
     public void setModalidade(String modalidade) { this.modalidade = modalidade; }
