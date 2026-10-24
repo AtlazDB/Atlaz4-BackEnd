@@ -136,7 +136,7 @@ public class ProcessamentoFocosServiceImpl implements ProcessamentoFocosService 
 
         void descarregar() {
             gravadorFocos.gravar(versaoId, aprovados);
-            gravadorFocos.gravarQuarentena(execucaoId, reprovados);
+            gravadorFocos.gravarQuarentena(execucaoId, versaoId, reprovados);
             aprovados.clear();
             reprovados.clear();
         }
