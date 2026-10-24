@@ -55,8 +55,9 @@ CREATE OR REPLACE PACKAGE BODY pkg_tratada AS
     v_texto VARCHAR2(4000);
   BEGIN
     IF p_tipo = 'GEOMETRIA' THEN
-      -- A geometria não está no payload: é a que chegou no arquivo.
-      RETURN 'q.geometria';
+      -- A geometria não está no payload: é a corrigida pelo operador, se
+      -- houver, ou a que chegou no arquivo.
+      RETURN 'NVL(q.geometria_corrigida, q.geometria)';
     END IF;
 
     v_texto := 'pkg_tratada.limpar(JSON_VALUE(NVL(q.payload_corrigido, q.payload), '

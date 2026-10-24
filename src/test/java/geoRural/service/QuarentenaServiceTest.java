@@ -3,6 +3,7 @@ package geoRural.service;
 import com.oracle.bmc.objectstorage.ObjectStorage;
 import geoRural.dto.CorrecaoRequestDTO;
 import geoRural.dto.DescarteRequestDTO;
+import geoRural.dto.GeometryCorrectionRequest;
 import geoRural.dto.QuarentenaFiltroDTO;
 import geoRural.dto.RevalidationError;
 import geoRural.dto.RevalidationResponse;
@@ -19,6 +20,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -206,7 +208,102 @@ class QuarentenaServiceTest {
         assertThat(service.buscarGeometria(semGeometria)).isNull();
     }
 
+    // ----- correção da geometria ------------------------------------------------
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void correcaoAutomaticaSugereGeometriaValidaSemGravar() {
+        long id = quarentenaComGeometria("{}", BORBOLETA);
+
+        Map<String, Object> sugestao = service.suggestGeometryFix(id);
+
+        assertThat((String) sugestao.get("type")).isIn("Polygon", "MultiPolygon");
+        assertThat(service.findCorrectedGeometry(id)).isNull();
+        assertThat(repository.findById(id).orElseThrow().getStatusAnalise()).isEqualTo("PENDENTE");
+    }
+
+    @Test
+    void correcaoAutomaticaRecusaGeometriaValidaOuAusente() {
+        long valida = quarentenaComGeometria("{}");
+        long semGeometria = quarentena("{}");
+
+        assertThatThrownBy(() -> service.suggestGeometryFix(valida))
+                .isInstanceOf(RequisicaoInvalidaException.class)
+                .hasMessageContaining("já é válida");
+        assertThatThrownBy(() -> service.suggestGeometryFix(semGeometria))
+                .isInstanceOf(RequisicaoInvalidaException.class)
+                .hasMessageContaining("desenhe uma nova");
+    }
+
+    @Test
+    void salvarGeometriaCorrigidaDeixaCorrigidoEPreservaAOriginal() {
+        long id = quarentenaComGeometria("{}", BORBOLETA);
+
+        var registro = service.saveCorrectedGeometry(id, new GeometryCorrectionRequest(QUADRADO, "Vértice trocado."));
+
+        assertThat(registro.getStatusAnalise()).isEqualTo("CORRIGIDO");
+        assertThat(registro.getJustificativa()).isEqualTo("Vértice trocado.");
+        assertThat(service.findCorrectedGeometry(id)).containsEntry("type", "Polygon");
+        assertThat(service.buscarGeometria(id)).isNotNull();
+    }
+
+    @Test
+    void salvarGeometriaQueAindaSeCruzaFalha() {
+        long id = quarentenaComGeometria("{}", BORBOLETA);
+        Map<String, Object> borboleta = Map.of("type", "Polygon", "coordinates", List.of(List.of(
+                List.of(-49.25, -25.42), List.of(-49.20, -25.42), List.of(-49.20, -25.48),
+                List.of(-49.26, -25.40), List.of(-49.25, -25.42))));
+
+        assertThatThrownBy(() -> service.saveCorrectedGeometry(id, new GeometryCorrectionRequest(borboleta, null)))
+                .isInstanceOf(RequisicaoInvalidaException.class)
+                .hasMessageContaining("se cruza");
+        assertThatThrownBy(() -> service.saveCorrectedGeometry(id,
+                new GeometryCorrectionRequest(Map.of("type", "Polygon"), null)))
+                .isInstanceOf(RequisicaoInvalidaException.class)
+                .hasMessageContaining("GeoJSON");
+    }
+
+    /** O revalidar e o pkg_tratada usam a geometria corrigida no lugar da original. */
+    @Test
+    void revalidarUsaAGeometriaCorrigida() {
+        mapearGeometria();
+        jdbc.update("""
+                INSERT INTO dataset_versao (conjunto, versao, execucao_id, zona)
+                VALUES ('teste_quarentena', 1, ?, 'TRATADA')""", execucaoId);
+        long id = quarentenaComGeometria("{\"cod_imovel\": \"PR-TESTE-Q-GEO\"}", BORBOLETA);
+
+        assertThat(service.revalidar(id).errors()).extracting(RevalidationError::errorType)
+                .containsExactly("GEOMETRIA_INVALIDA");
+
+        service.saveCorrectedGeometry(id, new GeometryCorrectionRequest(QUADRADO, null));
+        repository.flush();
+        RevalidationResponse resultado = service.revalidar(id);
+
+        assertThat(resultado.status()).isEqualTo("APROVADO");
+        assertThat(resultado.quarantine().getStatusAnalise()).isEqualTo("REVALIDADO");
+        assertThat(jdbc.queryForObject("""
+                SELECT pkg_quality.validate_geometry(geometria) FROM imovel_rural
+                 WHERE cod_imovel = 'PR-TESTE-Q-GEO'""", String.class)).isEqualTo("TRUE");
+    }
+
+    @Test
+    void validacaoDoOracleViraTextoParaATela() {
+        assertThat(QuarentenaService.describeOracleValidation("13349 [Element <1>] [Ring <1>]"))
+                .startsWith("o contorno do polígono se cruza");
+        assertThat(QuarentenaService.describeOracleValidation("13999"))
+                .isEqualTo("erro de geometria do Oracle (13999).");
+    }
+
     // ----- montagem -------------------------------------------------------------
+
+    /** Polígono em "laço" (as arestas se cruzam): GEOMETRIA_INVALIDA, código 13349. */
+    private static final String BORBOLETA = """
+            SDO_GEOMETRY(2003, 4326, NULL, SDO_ELEM_INFO_ARRAY(1, 1003, 1),
+              SDO_ORDINATE_ARRAY(-49.25, -25.42, -49.20, -25.42, -49.20, -25.48, -49.26, -25.40, -49.25, -25.42))""";
+
+    private static final Map<String, Object> QUADRADO = Map.of("type", "Polygon", "coordinates", List.of(List.of(
+            List.of(-51.20, -23.35), List.of(-51.15, -23.35), List.of(-51.15, -23.30),
+            List.of(-51.20, -23.30), List.of(-51.20, -23.35))));
 
     private long quarentena(String payload) {
         jdbc.update("""
@@ -227,12 +324,16 @@ class QuarentenaServiceTest {
     }
 
     private long quarentenaComGeometria(String payload) {
+        return quarentenaComGeometria(payload, """
+                SDO_GEOMETRY(2003, 4326, NULL, SDO_ELEM_INFO_ARRAY(1, 1003, 1),
+                  SDO_ORDINATE_ARRAY(-51.20, -23.35, -51.15, -23.35, -51.15, -23.30,
+                                     -51.20, -23.30, -51.20, -23.35))""");
+    }
+
+    private long quarentenaComGeometria(String payload, String geometriaSql) {
         jdbc.update("""
                 INSERT INTO registro_quarentena (execucao_id, numero_linha, motivo, payload, geometria)
-                VALUES (?, 1, 'teste da quarentena', ?, SDO_GEOMETRY(2003, 4326, NULL,
-                          SDO_ELEM_INFO_ARRAY(1, 1003, 1),
-                          SDO_ORDINATE_ARRAY(-51.20, -23.35, -51.15, -23.35, -51.15, -23.30,
-                                             -51.20, -23.30, -51.20, -23.35)))""", execucaoId, payload);
+                VALUES (?, 1, 'teste da quarentena', ?, %s)""".formatted(geometriaSql), execucaoId, payload);
         return ultimaQuarentena();
     }
 
