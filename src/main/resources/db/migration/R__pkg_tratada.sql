@@ -20,6 +20,7 @@ CREATE OR REPLACE PACKAGE pkg_tratada AS
   --   1. o mesmo arquivo foi processado de novo: os das execuções anteriores;
   --   2. outro arquivo, de uma versão anterior do mesmo conjunto, com o mesmo
   --      código que esta carga reprovou de novo ou gravou na Tratada.
+  -- A chave pode ser composta (colunas unidas por "|", como no pkg_quality).
   -- Também encerra os que a própria DAG descartou sozinha (desempate de código
   -- repetido): a carga nova tomou a mesma decisão de novo. Nunca toca no que uma
   -- pessoa analisou (CORRIGIDO, DESCARTADO pelo operador, REVALIDADO), nem em
@@ -272,6 +273,7 @@ CREATE OR REPLACE PACKAGE BODY pkg_tratada AS
     v_conjunto   dataset_versao.conjunto%TYPE;
     v_motivo     VARCHAR2(1000);
     v_total      NUMBER := 0;
+    v_chave_destino VARCHAR2(4000);  -- d.col1 || '|' || d.col2, como a chave_natural
   BEGIN
     SELECT e.arquivo_bruto_id, a.fonte_id INTO v_arquivo_id, v_fonte_id
       FROM execucao e JOIN arquivo_bruto a ON a.id = e.arquivo_bruto_id
@@ -314,12 +316,26 @@ CREATE OR REPLACE PACKAGE BODY pkg_tratada AS
                     WHERE n.execucao_id = p_execucao_id AND n.chave_natural = q.chave_natural);
     v_total := v_total + SQL%ROWCOUNT;
 
-    -- 2b. ... ou que esta carga gravou na Tratada. A chave vem do mapeamento da fonte, como
-    --     no gravar_registro: vale para qualquer tabela de destino com dataset_versao_id.
-    FOR r IN (SELECT DISTINCT LOWER(rc.destino_tabela) tabela, LOWER(rc.campo_destino) campo
+    -- 2b. ... ou que esta carga gravou na Tratada. A chave da tabela de destino é montada
+    --     como o pkg_quality monta a chave_natural: as colunas de chave na ordem da
+    --     fonte_coluna, unidas por "|" (chave composta), ou a própria coluna (chave simples).
+    --     Se a formatação não bater (chave numérica ou data), o registro fica pendente:
+    --     nunca é encerrado por engano.
+    FOR t IN (SELECT DISTINCT LOWER(rc.destino_tabela) tabela
                 FROM regra_campo rc
                WHERE rc.fonte_id = v_fonte_id AND rc.chave = 1) LOOP
-      IF tem_coluna(r.tabela, 'dataset_versao_id') THEN
+      IF tem_coluna(t.tabela, 'dataset_versao_id') THEN
+        v_chave_destino := NULL;
+        FOR c IN (SELECT rc.campo_destino
+                    FROM regra_campo rc
+                    JOIN fonte_coluna fc ON fc.id = rc.fonte_coluna_id
+                   WHERE rc.fonte_id = v_fonte_id AND rc.chave = 1
+                     AND LOWER(rc.destino_tabela) = t.tabela
+                   ORDER BY fc.ordem NULLS LAST, fc.nome_coluna) LOOP
+          v_chave_destino := CASE WHEN v_chave_destino IS NOT NULL THEN v_chave_destino || ' || ''|'' || ' END
+                          || 'TO_CHAR(d.' || DBMS_ASSERT.SIMPLE_SQL_NAME(c.campo_destino) || ')';
+        END LOOP;
+
         EXECUTE IMMEDIATE
           'UPDATE registro_quarentena q
               SET q.status_analise = ''SUBSTITUIDO'', q.justificativa = :motivo,
@@ -330,10 +346,10 @@ CREATE OR REPLACE PACKAGE BODY pkg_tratada AS
               AND LOWER(q.entidade) = :tabela
               AND q.execucao_id IN (SELECT dv.execucao_id FROM dataset_versao dv
                                      WHERE dv.conjunto = :conjunto AND dv.versao < :versao)
-              AND EXISTS (SELECT 1 FROM ' || DBMS_ASSERT.SIMPLE_SQL_NAME(r.tabela) || ' d
-                           WHERE d.' || DBMS_ASSERT.SIMPLE_SQL_NAME(r.campo) || ' = q.chave_natural
+              AND EXISTS (SELECT 1 FROM ' || DBMS_ASSERT.SIMPLE_SQL_NAME(t.tabela) || ' d
+                           WHERE ' || v_chave_destino || ' = q.chave_natural
                              AND d.dataset_versao_id = :versao_id)'
-          USING v_motivo, c_autor, c_autor_automatico, r.tabela, v_conjunto, v_versao, v_versao_id;
+          USING v_motivo, c_autor, c_autor_automatico, t.tabela, v_conjunto, v_versao, v_versao_id;
         v_total := v_total + SQL%ROWCOUNT;
       END IF;
     END LOOP;
