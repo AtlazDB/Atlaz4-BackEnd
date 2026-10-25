@@ -37,7 +37,7 @@ import static org.mockito.Mockito.when;
  * O validador é simulado só para deixar passar esse servidor local (que ele recusa de
  * propósito); a trava em si tem o próprio teste (ValidadorUrlExternaTest).
  */
-@SpringBootTest
+@SpringBootTest(properties = "app.processamento.airflow=false")  // a coleta Java, mesmo com o Airflow ligado no .env
 @Transactional
 class ColetaLinkServiceTest {
 
@@ -67,6 +67,16 @@ class ColetaLinkServiceTest {
             troca.close();
         });
         servidor.createContext("/sumiu", troca -> responder(troca, 404, "não achei", "text/plain"));
+        // O GeoServer corta no limite por pedido e avisa no começo do JSON; o ArcGIS avisa no fim.
+        servidor.createContext("/wfs", troca -> responder(troca, 200,
+                "{\"type\":\"FeatureCollection\",\"numberMatched\":558443,\"numberReturned\":10000,\"features\":[]}",
+                "application/json"));
+        servidor.createContext("/arcgis", troca -> responder(troca, 200,
+                "{\"type\":\"FeatureCollection\",\"features\":[],\"properties\":{\"exceededTransferLimit\":true}}",
+                "application/json"));
+        servidor.createContext("/wfs-completo", troca -> responder(troca, 200,
+                "{\"type\":\"FeatureCollection\",\"numberMatched\":2,\"numberReturned\":2,\"features\":[]}",
+                "application/json"));
         servidor.start();
         base = "http://127.0.0.1:" + servidor.getAddress().getPort();
         when(validador.validar(anyString())).thenAnswer(chamada -> URI.create(chamada.getArgument(0)));
@@ -85,6 +95,7 @@ class ColetaLinkServiceTest {
         assertThat(primeira.resultado()).isEqualTo("RECEBIDO");
         assertThat(primeira.arquivo().nome()).isEqualTo("focos.csv");
         assertThat(primeira.arquivo().status()).isEqualTo("RECEBIDO");
+        assertThat(primeira.arquivo().origem()).isEqualTo("COLETA");
         verify(objectStorage, times(1)).putObject(any(PutObjectRequest.class));
 
         ColetaResponse segunda = coleta.executar(fonteId);
@@ -113,6 +124,41 @@ class ColetaLinkServiceTest {
         assertThatThrownBy(() -> coleta.executar(fonteId))
                 .isInstanceOf(ColetaFalhouException.class)
                 .hasMessage("O servidor de origem respondeu HTTP 404.");
+        verify(objectStorage, never()).putObject(any(PutObjectRequest.class));
+    }
+
+    @Test
+    void recusaRespostaCortadaNoLimitePorPedido() {
+        long wfs = fonte(base + "/wfs");
+        assertThatThrownBy(() -> coleta.executar(wfs))
+                .isInstanceOf(ColetaFalhouException.class)
+                .hasMessageStartingWith("O serviço entregou 10000 de 558443 registros");
+
+        jdbc.update("DELETE FROM fonte WHERE id = ?", wfs);
+        long arcgis = fonte(base + "/arcgis");
+        assertThatThrownBy(() -> coleta.executar(arcgis))
+                .isInstanceOf(ColetaFalhouException.class)
+                .hasMessageStartingWith("O serviço ArcGIS cortou a resposta");
+        verify(objectStorage, never()).putObject(any(PutObjectRequest.class));
+
+        jdbc.update("DELETE FROM fonte WHERE id = ?", arcgis);
+        assertThat(coleta.executar(fonte(base + "/wfs-completo")).resultado()).isEqualTo("RECEBIDO");
+    }
+
+    @Test
+    void comOAirflowLigadoSoRegistraOPedido() {
+        Fonte fonte = new Fonte();
+        fonte.setUrlOrigem(base + "/focos.csv");
+        FonteService fontes = org.mockito.Mockito.mock(FonteService.class);
+        when(fontes.buscarPorId(7L)).thenReturn(fonte);
+        geoRural.repository.FonteRepository repositorio = org.mockito.Mockito.mock(geoRural.repository.FonteRepository.class);
+        ColetaLinkServiceImpl comAirflow = new ColetaLinkServiceImpl(fontes, null, null, null, repositorio, 1024, true);
+
+        ColetaResponse resposta = comAirflow.executar(7L);
+
+        assertThat(resposta.resultado()).isEqualTo("SOLICITADA");
+        assertThat(fonte.getColetaSolicitadaEm()).isNotNull();
+        verify(repositorio).save(fonte);
         verify(objectStorage, never()).putObject(any(PutObjectRequest.class));
     }
 

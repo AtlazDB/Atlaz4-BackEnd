@@ -6,6 +6,7 @@ import geoRural.entity.Fonte;
 import geoRural.exception.ColetaFalhouException;
 import geoRural.exception.RequisicaoInvalidaException;
 import geoRural.repository.ArquivoBrutoRepository;
+import geoRural.repository.FonteRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -23,6 +24,8 @@ import java.security.DigestInputStream;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.LocalDateTime;
+import java.time.OffsetDateTime;
+import java.nio.charset.StandardCharsets;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.util.HexFormat;
@@ -41,8 +44,10 @@ import java.util.regex.Pattern;
  * depende do tamanho do arquivo, e dá para saber se o conteúdo mudou antes de subir qualquer
  * coisa. Conteúdo igual ao da última coleta da fonte não é gravado ("sem mudança").
  *
- * Fica para a coleta do Airflow (Sprint 3): paginação de serviços (ArcGIS, WFS), agendamento e
- * downloads longos sem segurar a requisição da tela.
+ * Com o Airflow ligado (AIRFLOW_HABILITADO), o "Executar" só registra o pedido na fonte: a DAG
+ * coleta_fontes pagina o serviço (ArcGIS, WFS) e traz tudo, sem segurar a requisição da tela.
+ * Sem o Airflow, a coleta é aqui mesmo, num pedido só, e recusa a resposta que o servidor cortou
+ * (conferirCompletude): nunca grava dado pela metade como se estivesse completo.
  */
 @Service
 public class ColetaLinkServiceImpl implements ColetaLinkService {
@@ -57,7 +62,9 @@ public class ColetaLinkServiceImpl implements ColetaLinkService {
     private final ArquivoBrutoRepository repository;
     private final ObjectStorageService objectStorageService;
     private final ClienteHttpExterno cliente;
+    private final FonteRepository fonteRepository;
     private final long limiteBytes;
+    private final boolean coletaNoAirflow;
 
     @Value("${oci.zona-bruta}")
     private String zonaBruta;
@@ -66,12 +73,16 @@ public class ColetaLinkServiceImpl implements ColetaLinkService {
                                  ArquivoBrutoRepository repository,
                                  ObjectStorageService objectStorageService,
                                  ClienteHttpExterno cliente,
-                                 @Value("${app.coleta.limite-bytes:2147483648}") long limiteBytes) {
+                                 FonteRepository fonteRepository,
+                                 @Value("${app.coleta.limite-bytes:2147483648}") long limiteBytes,
+                                 @Value("${app.processamento.airflow:false}") boolean coletaNoAirflow) {
         this.fonteService = fonteService;
         this.repository = repository;
         this.objectStorageService = objectStorageService;
         this.cliente = cliente;
+        this.fonteRepository = fonteRepository;
         this.limiteBytes = limiteBytes;
+        this.coletaNoAirflow = coletaNoAirflow;
     }
 
     @Override
@@ -81,11 +92,19 @@ public class ColetaLinkServiceImpl implements ColetaLinkService {
             throw new RequisicaoInvalidaException(
                     "Esta fonte não tem link de origem: cadastre a URL para poder coletar.", List.of("urlOrigem"));
         }
+        if (coletaNoAirflow) {
+            // A DAG coleta_fontes procura os pedidos a cada 2 minutos.
+            fonte.setColetaSolicitadaEm(OffsetDateTime.now());
+            fonteRepository.save(fonte);
+            log.info("Fonte {}: coleta pedida ao Airflow", fonteId);
+            return ColetaResponse.solicitada();
+        }
 
         Path temporario = null;
         try {
             temporario = Files.createTempFile("coleta-", ".tmp");
             Download download = baixar(fonte, temporario);
+            conferirCompletude(temporario);
 
             Optional<ArquivoBruto> ultimo = repository.findByFonteIdOrderByRecebidoEmDesc(fonteId).stream().findFirst();
             if (ultimo.isPresent() && download.hash().equals(ultimo.get().getHashSha256())) {
@@ -106,6 +125,7 @@ public class ColetaLinkServiceImpl implements ColetaLinkService {
             bruto.setContentType(download.contentType());
             bruto.setHashSha256(download.hash());
             bruto.setStatus(ArquivoBruto.STATUS_RECEBIDO);
+            bruto.setOrigem(ArquivoBruto.ORIGEM_COLETA);
             ArquivoBruto salvo = repository.save(bruto);
             log.info("Fonte {}: coletado {} ({} bytes) em {}", fonteId, download.nome(), download.tamanho(), chave);
             return ColetaResponse.recebido(salvo);
@@ -126,6 +146,43 @@ public class ColetaLinkServiceImpl implements ColetaLinkService {
     }
 
     private record Download(String nome, String contentType, long tamanho, String hash) {}
+
+    private static final Pattern NUMERO_PEDIDO = Pattern.compile("\"numberMatched\"\\s*:\\s*(\\d+)");
+    private static final Pattern NUMERO_DEVOLVIDO = Pattern.compile("\"numberReturned\"\\s*:\\s*(\\d+)");
+    private static final Pattern CORTE_ARCGIS = Pattern.compile("\"exceededTransferLimit\"\\s*:\\s*true");
+
+    /**
+     * Recusa a resposta que o servidor cortou no limite por pedido. O GeoServer (WFS) diz quantos
+     * existem (numberMatched) e quantos mandou (numberReturned); o ArcGIS marca
+     * exceededTransferLimit. Os dois põem isso no começo ou no fim do JSON, então basta ler as
+     * pontas do arquivo, sem carregar tudo.
+     */
+    static void conferirCompletude(Path arquivo) throws IOException {
+        String pontas = pontas(arquivo, 64 * 1024);
+        Matcher existem = NUMERO_PEDIDO.matcher(pontas);
+        Matcher vieram = NUMERO_DEVOLVIDO.matcher(pontas);
+        if (existem.find() && vieram.find() && Long.parseLong(vieram.group(1)) < Long.parseLong(existem.group(1))) {
+            throw new ColetaFalhouException("O serviço entregou " + vieram.group(1) + " de " + existem.group(1)
+                    + " registros num pedido só. Com o Airflow ligado a coleta pagina e traz tudo; sem ele, use um"
+                    + " filtro no link que caiba num pedido.");
+        }
+        if (CORTE_ARCGIS.matcher(pontas).find()) {
+            throw new ColetaFalhouException("O serviço ArcGIS cortou a resposta no limite por pedido. Com o Airflow"
+                    + " ligado a coleta pagina e traz tudo; sem ele, use um filtro (where) que caiba num pedido.");
+        }
+    }
+
+    /** O começo e o fim do arquivo, como texto: onde os serviços põem o total. */
+    private static String pontas(Path arquivo, int tamanho) throws IOException {
+        long total = Files.size(arquivo);
+        try (var canal = java.nio.channels.FileChannel.open(arquivo)) {
+            java.nio.ByteBuffer inicio = java.nio.ByteBuffer.allocate((int) Math.min(tamanho, total));
+            canal.read(inicio, 0);
+            java.nio.ByteBuffer fim = java.nio.ByteBuffer.allocate((int) Math.min(tamanho, total));
+            canal.read(fim, Math.max(0, total - tamanho));
+            return new String(inicio.array(), StandardCharsets.UTF_8) + "\n" + new String(fim.array(), StandardCharsets.UTF_8);
+        }
+    }
 
     private Download baixar(Fonte fonte, Path destino) throws IOException, InterruptedException {
         HttpResponse<InputStream> resposta = cliente.abrir(new ClienteHttpExterno.Pedido(

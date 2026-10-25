@@ -87,14 +87,20 @@ public class FonteController {
     }
 
     /**
-     * "Executar agora" de uma fonte por link: baixa o link para a zona bruta. 201 quando gravou
-     * um arquivo novo (RECEBIDO, segue como um upload); 200 quando o conteúdo é igual ao da
-     * última coleta (SEM_MUDANCA, nada gravado). Falha do servidor de origem responde 502.
+     * "Executar agora" de uma fonte por link. Com o Airflow ligado, 202: o pedido fica na fila da
+     * DAG coleta_fontes, que pagina o serviço (SOLICITADA). Sem ele, baixa o link aqui: 201 quando
+     * gravou um arquivo novo (RECEBIDO, segue como um upload); 200 quando o conteúdo é igual ao da
+     * última coleta (SEM_MUDANCA, nada gravado). Falha do servidor de origem, ou resposta cortada
+     * no limite por pedido, responde 502.
      */
     @PostMapping("/{id}/executar")
     public ResponseEntity<ColetaResponse> executar(@PathVariable Long id) {
         ColetaResponse resultado = coletaLinkService.executar(id);
-        HttpStatus status = "RECEBIDO".equals(resultado.resultado()) ? HttpStatus.CREATED : HttpStatus.OK;
+        HttpStatus status = switch (resultado.resultado()) {
+            case "RECEBIDO" -> HttpStatus.CREATED;
+            case "SOLICITADA" -> HttpStatus.ACCEPTED;
+            default -> HttpStatus.OK;
+        };
         return ResponseEntity.status(status).body(resultado);
     }
 

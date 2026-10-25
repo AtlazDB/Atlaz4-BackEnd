@@ -34,6 +34,13 @@ CREATE OR REPLACE PACKAGE pkg_quality AS
   -- Não grava nada: desfaz tudo antes de devolver.
   -- ORA-20002: registro de quarentena não encontrado.
   FUNCTION revalidar_registro(p_quarentena_id IN NUMBER) RETURN CLOB;
+
+  -- Monta de novo o recorte_territorial da UF (V19): a união dos municípios,
+  -- simplificada, cortada em grade de 0,25°. É o que a regra "fora do PR"
+  -- compara. O validate chama sozinho quando a malha municipal muda de versão;
+  -- é pública para rodar à mão depois de uma carga de municípios fora do fluxo.
+  -- Transação autônoma: confirma na hora, para o índice espacial valer.
+  PROCEDURE atualizar_recorte(p_uf IN VARCHAR2 DEFAULT 'PR');
 END pkg_quality;
 /
 
@@ -42,6 +49,12 @@ CREATE OR REPLACE PACKAGE BODY pkg_quality AS
   -- Tolerância da validação e da correção, em metros (o SRID 4326 é geodésico).
   -- Mesmo valor da V4.
   c_tolerance CONSTANT NUMBER := 0.05;
+
+  -- Lado da célula da grade do recorte, em graus, e as simplificações do
+  -- contorno, em metros (cada município antes da união; o contorno depois).
+  c_passo_recorte      CONSTANT NUMBER := 0.25;
+  c_simplifica_mun     CONSTANT NUMBER := 10;
+  c_simplifica_recorte CONSTANT NUMBER := 20;
 
   -- Máscara da DATA quando a regra não traz formato_origem (Rocha: DD/MM/YYYY).
   c_date_format CONSTANT VARCHAR2(30) := 'DD/MM/YYYY';
@@ -150,6 +163,87 @@ CREATE OR REPLACE PACKAGE BODY pkg_quality AS
     RETURN 1;
   END valid_cpf_cnpj;
 
+  PROCEDURE atualizar_recorte(p_uf IN VARCHAR2 DEFAULT 'PR') IS
+    PRAGMA AUTONOMOUS_TRANSACTION;
+    v_versao   NUMBER;
+    v_atual    NUMBER;
+    v_qtd      NUMBER;
+    v_contorno SDO_GEOMETRY;
+    v_celula   SDO_GEOMETRY;
+    v_pedaco   SDO_GEOMETRY;
+    v_x0       NUMBER;
+    v_y0       NUMBER;
+    v_x1       NUMBER;
+    v_y1       NUMBER;
+  BEGIN
+    -- Dois processamentos ao mesmo tempo não montam a grade duas vezes: o
+    -- segundo espera e, ao ver que já está atualizada, sai.
+    LOCK TABLE recorte_territorial IN EXCLUSIVE MODE;
+    SELECT MAX(dataset_versao_id), COUNT(*) INTO v_versao, v_qtd FROM municipio WHERE estado = p_uf;
+    SELECT MAX(versao_municipios) INTO v_atual FROM recorte_territorial WHERE uf = p_uf;
+    IF v_qtd = 0 OR (v_atual IS NOT NULL AND v_atual = v_versao) THEN
+      COMMIT;
+      RETURN;
+    END IF;
+
+    SELECT SDO_UTIL.SIMPLIFY(SDO_AGGR_UNION(SDOAGGRTYPE(
+             SDO_UTIL.SIMPLIFY(geometria, c_simplifica_mun, c_tolerance), c_tolerance)),
+             c_simplifica_recorte, c_tolerance)
+      INTO v_contorno
+      FROM municipio
+     WHERE estado = p_uf;
+
+    DELETE FROM recorte_territorial WHERE uf = p_uf;
+
+    -- Grade alinhada em múltiplos do passo, cobrindo a caixa do contorno.
+    v_x0 := FLOOR(SDO_GEOM.SDO_MIN_MBR_ORDINATE(v_contorno, 1) / c_passo_recorte) * c_passo_recorte;
+    v_y0 := FLOOR(SDO_GEOM.SDO_MIN_MBR_ORDINATE(v_contorno, 2) / c_passo_recorte) * c_passo_recorte;
+    v_x1 := SDO_GEOM.SDO_MAX_MBR_ORDINATE(v_contorno, 1);
+    v_y1 := SDO_GEOM.SDO_MAX_MBR_ORDINATE(v_contorno, 2);
+    FOR x IN 0 .. CEIL((v_x1 - v_x0) / c_passo_recorte) - 1 LOOP
+      FOR y IN 0 .. CEIL((v_y1 - v_y0) / c_passo_recorte) - 1 LOOP
+        v_celula := SDO_GEOMETRY(2003, 4326, NULL, SDO_ELEM_INFO_ARRAY(1, 1003, 1), SDO_ORDINATE_ARRAY(
+          v_x0 + x * c_passo_recorte,       v_y0 + y * c_passo_recorte,
+          v_x0 + (x + 1) * c_passo_recorte, v_y0 + y * c_passo_recorte,
+          v_x0 + (x + 1) * c_passo_recorte, v_y0 + (y + 1) * c_passo_recorte,
+          v_x0 + x * c_passo_recorte,       v_y0 + (y + 1) * c_passo_recorte,
+          v_x0 + x * c_passo_recorte,       v_y0 + y * c_passo_recorte));
+        v_pedaco := SDO_GEOM.SDO_INTERSECTION(v_contorno, v_celula, c_tolerance);
+        IF v_pedaco IS NOT NULL THEN
+          INSERT INTO recorte_territorial (uf, geometria, versao_municipios) VALUES (p_uf, v_pedaco, v_versao);
+        END IF;
+      END LOOP;
+    END LOOP;
+    COMMIT;
+  EXCEPTION
+    WHEN OTHERS THEN
+      ROLLBACK;
+      RAISE;
+  END atualizar_recorte;
+
+  -- Condição SQL de "não é data" para a regra DATA: EPOCH_MS, ou uma ou mais
+  -- máscaras separadas por "|" (inválida só se nenhuma converter). Exato (FX).
+  FUNCTION data_invalida(p_formato IN VARCHAR2) RETURN VARCHAR2 IS
+    v_resto   VARCHAR2(400) := NVL(p_formato, c_date_format);
+    v_mascara VARCHAR2(400);
+    v_pos     PLS_INTEGER;
+    v_sql     VARCHAR2(4000);
+  BEGIN
+    IF UPPER(p_formato) = 'EPOCH_MS' THEN
+      -- milissegundos desde 1970, como o ArcGIS entrega (pkg_tratada.expressao converte)
+      RETURN 'NOT REGEXP_LIKE(x.valor, ''^[0-9]{1,15}$'')';
+    END IF;
+    LOOP
+      v_pos := INSTR(v_resto, '|');
+      v_mascara := TRIM(CASE WHEN v_pos > 0 THEN SUBSTR(v_resto, 1, v_pos - 1) ELSE v_resto END);
+      v_sql := CASE WHEN v_sql IS NOT NULL THEN v_sql || ' AND ' END
+               || 'VALIDATE_CONVERSION(x.valor AS DATE, ' || DBMS_ASSERT.ENQUOTE_LITERAL('FX' || v_mascara) || ') = 0';
+      EXIT WHEN v_pos = 0;
+      v_resto := SUBSTR(v_resto, v_pos + 1);
+    END LOOP;
+    RETURN '(' || v_sql || ')';
+  END data_invalida;
+
   PROCEDURE validate(p_execucao_id IN NUMBER) IS
     v_fonte_id            NUMBER;
     v_geometry_column     fonte_coluna.nome_coluna%TYPE;
@@ -224,6 +318,9 @@ CREATE OR REPLACE PACKAGE BODY pkg_quality AS
         RAISE_APPLICATION_ERROR(-20001,
           'Nenhum município do PR na tabela municipio: carregue a malha do IBGE antes de validar.');
       END IF;
+
+      -- O recorte em grade (V19) acompanha a versão da malha municipal.
+      atualizar_recorte('PR');
     END IF;
 
     -- Obrigatório. Os códigos são os da V10 (tabela tipo_erro):
@@ -264,8 +361,13 @@ CREATE OR REPLACE PACKAGE BODY pkg_quality AS
     -- falso nulo não entram (isso é com o obrigatório). TEXTO aceita tudo e a
     -- GEOMETRIA vem em geometria_wkb.
     --   INTEIRO:  só dígitos, com sinal opcional;
-    --   DECIMAL:  ponto como separador, como no CAR (Rocha);
-    --   DATA:     formato_origem ou DD/MM/YYYY, exato (FX) (Rocha);
+    --   DECIMAL:  ponto como separador, como no CAR (Rocha); com
+    --             formato_origem VIRGULA, aceita vírgula ou ponto (o IAT manda
+    --             o FRP dos focos como "25,9");
+    --   DATA:     formato_origem ou DD/MM/YYYY, exato (FX) (Rocha); várias
+    --             máscaras separadas por "|" valem se qualquer uma converter (o
+    --             IAT mistura "2015/03/11 17:19:00" e "11/12/2025 17:11:00");
+    --             EPOCH_MS = milissegundos desde 1970 (datas do ArcGIS);
     --   BOOLEANO: SIM/NÃO, sem diferenciar maiúscula (Rocha); NAO sem acento
     --             também vale, porque os arquivos do CAR vêm sem acento.
     FOR r IN (SELECT fc.nome_coluna, rc.tipo_dado, rc.formato_origem
@@ -277,10 +379,12 @@ CREATE OR REPLACE PACKAGE BODY pkg_quality AS
         WHEN 'INTEIRO' THEN
           'NOT REGEXP_LIKE(x.valor, ''^[+-]?[0-9]+$'')'
         WHEN 'DECIMAL' THEN
-          'NOT REGEXP_LIKE(x.valor, ''^[+-]?[0-9]*[.]?[0-9]+$'')'
+          CASE WHEN UPPER(r.formato_origem) = 'VIRGULA'
+               THEN 'NOT REGEXP_LIKE(x.valor, ''^[+-]?[0-9]*[.,]?[0-9]+$'')'
+               ELSE 'NOT REGEXP_LIKE(x.valor, ''^[+-]?[0-9]*[.]?[0-9]+$'')'
+          END
         WHEN 'DATA' THEN
-          'VALIDATE_CONVERSION(x.valor AS DATE, '
-             || DBMS_ASSERT.ENQUOTE_LITERAL('FX' || NVL(r.formato_origem, c_date_format)) || ') = 0'
+          data_invalida(r.formato_origem)
         WHEN 'BOOLEANO' THEN
           'UPPER(x.valor) NOT IN (''SIM'', ''NÃO'', ''NAO'')'
       END;
@@ -460,8 +564,10 @@ CREATE OR REPLACE PACKAGE BODY pkg_quality AS
         END IF;
       END LOOP;
 
-      -- Fora do PR: reprova só a que não encosta em nenhum município do PR.
-      -- Parcialmente fora aprova, sem recorte. As que já têm erro
+      -- Fora do PR: reprova só a que não encosta no PR. Compara com o contorno
+      -- do estado em grade (recorte_territorial, V19), não com a malha
+      -- municipal inteira: ~10x mais rápido, mesmo resultado (o contorno é
+      -- simplificado em ~20 m). Parcialmente fora aprova, sem recorte. As que já têm erro
       -- GEOMETRIA_INVALIDA ficam de fora: estão reprovadas e o SDO_ANYINTERACT pode falhar nelas.
       -- As do tipo errado também (GEOMETRIA_TIPO_INCOMPATIVEL).
       IF v_check_pr = 1 THEN
@@ -476,9 +582,9 @@ CREATE OR REPLACE PACKAGE BODY pkg_quality AS
                             WHERE e.staging_id = s.id
                               AND e.tipo_erro = 'GEOMETRIA_INVALIDA')
            AND NOT EXISTS (SELECT 1
-                             FROM municipio m
-                            WHERE m.estado = 'PR'
-                              AND SDO_ANYINTERACT(m.geometria, s.geometria) = 'TRUE');
+                             FROM recorte_territorial r
+                            WHERE r.uf = 'PR'
+                              AND SDO_ANYINTERACT(r.geometria, s.geometria) = 'TRUE');
       END IF;
     END IF;
 

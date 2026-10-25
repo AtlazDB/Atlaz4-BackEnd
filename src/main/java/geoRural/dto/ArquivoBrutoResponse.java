@@ -10,7 +10,8 @@ public record ArquivoBrutoResponse(
         long tamanho,
         OffsetDateTime enviadoEm,
         String hash,
-        String status
+        String status,
+        String origem
 ) {
     public static ArquivoBrutoResponse de(ArquivoBruto a) {
         return new ArquivoBrutoResponse(
@@ -19,7 +20,8 @@ public record ArquivoBrutoResponse(
                 a.getTamanhoBytes(),
                 a.getRecebidoEm(),
                 "sha256:" + a.getHashSha256(),
-                a.getStatus()
+                a.getStatus(),
+                a.getOrigem()
         );
     }
 }

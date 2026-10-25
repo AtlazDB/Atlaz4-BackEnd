@@ -19,7 +19,7 @@ import geoRural.dto.ProcessamentoResponse;
 import geoRural.exception.ProcessamentoEmAndamentoException;
 import geoRural.service.GravadorImoveis.ArquivoParaProcessar;
 
-/** Com AIRFLOW_HABILITADO=true o back-end não processa: só devolve o arquivo para a fila do Airflow. */
+/** Com AIRFLOW_HABILITADO=true o back-end não processa: só devolve o arquivo (de qualquer fonte) para a fila do Airflow. */
 class ProcessamentoCarAirflowTest {
 
     private GravadorImoveis gravador;
@@ -46,6 +46,18 @@ class ProcessamentoCarAirflowTest {
         verify(gravador, never()).marcarProcessando(anyLong());
         verify(gravador, never()).iniciarExecucao(anyLong());
         verifyNoInteractions(objectStorage);
+    }
+
+    @Test
+    void qualquerFonteVaiParaAFilaDoAirflow() {
+        when(gravador.buscarArquivo(2L)).thenReturn(Optional.of(new ArquivoParaProcessar(
+                2L, "bruta/MUN-IAT/2026-10-24/abc_municipios.zip", "municipios.zip", "AGUARDANDO_MAPEAMENTO", "MUN-IAT")));
+        when(gravador.marcarRecebido(2L)).thenReturn(true);
+        ProcessamentoArquivoServiceImpl roteador = new ProcessamentoArquivoServiceImpl(gravador,
+                mock(ProcessamentoCarService.class), mock(ProcessamentoReservaLegalService.class),
+                mock(ProcessamentoFocosService.class), true);
+
+        assertThat(roteador.processar(2L).status()).isEqualTo("RECEBIDO");
     }
 
     @Test
