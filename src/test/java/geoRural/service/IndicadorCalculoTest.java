@@ -29,12 +29,16 @@ import static org.assertj.core.api.Assertions.assertThat;
 @Transactional
 class IndicadorCalculoTest {
 
+    // Códigos no formato do CAR: a cobertura da RL é pelo código IBGE dentro do cod_imovel.
+    // 9999901 e 9999902 não existem: nenhuma RL real cai nesses municípios.
     /** Imóvel com RL e focos: 100,5 ha */
-    private static final String COM_RL = "TESTE-IND-1";
+    private static final String COM_RL = "PR-9999901-TESTEIND1";
     /** Mesmo município, nenhuma RL declarada */
-    private static final String SEM_RL = "TESTE-IND-2";
+    private static final String SEM_RL = "PR-9999901-TESTEIND2";
     /** Município que não veio em nenhum arquivo de RL */
-    private static final String SEM_COBERTURA = "TESTE-IND-3";
+    private static final String SEM_COBERTURA = "PR-9999902-TESTEIND3";
+    /** RL declarada maior que o próprio imóvel (fragmentos sobrepostos) */
+    private static final String RL_MAIOR = "PR-9999901-TESTEIND4";
 
     @MockitoBean
     private ObjectStorage objectStorage;
@@ -55,10 +59,13 @@ class IndicadorCalculoTest {
         imovel(COM_RL, "Municipio Teste Indicadores", "100.5", -40.17, -30.31, -40.16, -30.30, versaoImovel);
         imovel(SEM_RL, "Municipio Teste Indicadores", "50", -40.15, -30.31, -40.14, -30.30, versaoImovel);
         imovel(SEM_COBERTURA, "Municipio Sem Cobertura", "80", -40.13, -30.31, -40.12, -30.30, versaoImovel);
+        imovel(RL_MAIOR, "Municipio Teste Indicadores", "10", -40.11, -30.31, -40.10, -30.30, versaoImovel);
 
         // 12 + 3,5 = 15,5 ha de RL
         reservaLegal(COM_RL, "12", -40.169, -30.309, -40.165, -30.305, versaoRl);
         reservaLegal(COM_RL, "3.5", -40.164, -30.304, -40.162, -30.302, versaoRl);
+        reservaLegal(RL_MAIOR, "8", -40.109, -30.309, -40.105, -30.305, versaoRl);
+        reservaLegal(RL_MAIOR, "7", -40.106, -30.306, -40.102, -30.302, versaoRl);
 
         LocalDateTime agora = LocalDateTime.now(ZoneOffset.UTC);
         foco("t1", agora.minusMonths(1), "AQUA_M-T", -40.168, -30.306, versaoFocos);
@@ -70,7 +77,7 @@ class IndicadorCalculoTest {
 
     @Test
     void irlBateComAContaFeitaAMao() {
-        service.calcular();
+        calcularCaso();
 
         IndicadorResponse irl = indicador(COM_RL, "IRL");
         // 15,5 / 100,5 x 100 = 15,4229% → abaixo de 20%: Crítico. Saldo: 15,5 - 20,1 = -4,6 ha
@@ -90,7 +97,7 @@ class IndicadorCalculoTest {
 
     @Test
     void ifcContaSoOSateliteDeReferenciaDentroDaJanelaEDoImovel() {
-        service.calcular();
+        calcularCaso();
 
         IndicadorResponse ifc = indicador(COM_RL, "IFC");
         // t1 e t2 contam; t3 (13 meses), t4 (NOAA-20) e t5 (fora do imóvel) não.
@@ -105,7 +112,7 @@ class IndicadorCalculoTest {
 
     @Test
     void imovelDeMunicipioCobertoSemRlFicaComZeroEFocoZeroEConforme() {
-        service.calcular();
+        calcularCaso();
 
         IndicadorResponse irl = indicador(SEM_RL, "IRL");
         assertThat(irl.valor()).isEqualByComparingTo("0");
@@ -119,20 +126,50 @@ class IndicadorCalculoTest {
 
     @Test
     void imovelForaDaCoberturaDaRlNaoGanhaIrl() {
-        service.calcular();
+        calcularCaso();
 
         IndicadoresImovelResponse resposta = service.buscarPorImovel(SEM_COBERTURA);
         assertThat(resposta.indicadores()).extracting(IndicadorResponse::indicador)
                 .containsExactly("IFC"); // IFC sim (focos cobrem o estado), IRL não
     }
 
+    /** Como no DataGIS (V072): 8 + 7 = 15 ha de RL num imóvel de 10 ha contam como 10 ha (100%). */
+    @Test
+    void rlMaiorQueOImovelContaComoCemPorCento() {
+        calcularCaso();
+
+        IndicadorResponse irl = indicador(RL_MAIOR, "IRL");
+        assertThat(irl.valor()).isEqualByComparingTo("100");
+        assertThat(irl.numerador()).isEqualByComparingTo("10");
+        assertThat(irl.status()).isEqualTo("CONFORME");
+    }
+
     @Test
     void recalcularComAsMesmasVersoesNaoDuplica() {
-        service.calcular();
-        service.calcular();
+        calcularCaso();
+        calcularCaso();
 
         assertThat(service.historico(COM_RL, "IRL")).hasSize(1);
         assertThat(service.historico(COM_RL, "IFC")).hasSize(1);
+    }
+
+    /**
+     * Calcula só os imóveis deste caso, pelas mesmas funções que o service.calcular() chama: com o PR
+     * carregado no banco local, recalcular os 559 mil imóveis levaria ~15 min por teste.
+     */
+    private void calcularCaso() {
+        for (String cod : List.of(COM_RL, SEM_RL, SEM_COBERTURA, RL_MAIOR)) {
+            jdbc.execute((java.sql.Connection c) -> {
+                for (String funcao : List.of("calcular_irl", "calcular_ifc")) {
+                    try (var chamada = c.prepareCall("{? = call pkg_indicadores." + funcao + "(?)}")) {
+                        chamada.registerOutParameter(1, java.sql.Types.NUMERIC);
+                        chamada.setString(2, cod);
+                        chamada.execute();
+                    }
+                }
+                return null;
+            });
+        }
     }
 
     private IndicadorResponse indicador(String codImovel, String sigla) {

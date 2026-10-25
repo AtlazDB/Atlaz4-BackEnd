@@ -7,6 +7,8 @@ CREATE OR REPLACE PACKAGE pkg_tratada AS
   -- (o "Revalidar" da tela), com o payload corrigido se houver, e marca o
   -- registro como REVALIDADO. Valida de novo antes de gravar: não confia em
   -- quem chamou. Não dá COMMIT: quem controla a transação é quem chama.
+  -- Com chave, MERGE pela chave; sem chave (carga-retrato, ex.: Reserva Legal),
+  -- entra como mais uma linha da versão que trouxe o registro.
   --   ORA-20010: registro de quarentena não encontrado.
   --   ORA-20011: registro já encerrado (DESCARTADO, REVALIDADO ou SUBSTITUIDO).
   --   ORA-20012: o registro não passou na revalidação.
@@ -233,6 +235,9 @@ CREATE OR REPLACE PACKAGE BODY pkg_tratada AS
 
     v            t_gravacao;
     v_origem     VARCHAR2(32767);  -- SELECT ... FROM registro_quarentena q
+    -- Como achar "o mesmo registro" na tabela: pela chave; sem chave (carga-retrato,
+    -- como a Reserva Legal), pelo imóvel; sem os dois, não há como comparar.
+    v_mesmo      VARCHAR2(4000);
   BEGIN
     -- 1. O registro, travado: dois "Revalidar" ao mesmo tempo não gravam duas vezes.
     BEGIN
@@ -290,11 +295,9 @@ CREATE OR REPLACE PACKAGE BODY pkg_tratada AS
     -- 5. Monta a origem do MERGE a partir do mapeamento.
     v := montar(v_fonte_id, v_tabela, 'NVL(q.payload_corrigido, q.payload)', 'NVL(q.geometria_corrigida, q.geometria)');
 
-    IF v.on_chave IS NULL THEN
-      RAISE_APPLICATION_ERROR(-20013,
-        'O mapeamento de ' || v_tabela || ' não tem coluna marcada como chave: '
-        || 'sem ela não dá para saber se o registro já existe.');
-    END IF;
+    -- Sem chave (carga-retrato, ex.: Reserva Legal): o registro entra como mais um
+    -- polígono da carga que o trouxe, e a trava abaixo compara pelo imóvel.
+    v_mesmo := NVL(v.on_chave, CASE WHEN tem_campo(v, 'cod_imovel') THEN 'd.cod_imovel = s.cod_imovel' END);
 
     -- A versão: a tabela tem a coluna e o mapeamento não cobre.
     IF tem_coluna(v_tabela, 'dataset_versao_id') AND NOT tem_campo(v, 'dataset_versao_id') THEN
@@ -309,11 +312,11 @@ CREATE OR REPLACE PACKAGE BODY pkg_tratada AS
 
     -- 6. Não volta o dado para trás: se uma carga mais nova já gravou esta
     --    chave, revalidar o registro antigo apagaria a versão mais recente.
-    IF v_versao IS NOT NULL AND tem_coluna(v_tabela, 'dataset_versao_id') THEN
+    IF v_versao IS NOT NULL AND v_mesmo IS NOT NULL AND tem_coluna(v_tabela, 'dataset_versao_id') THEN
       EXECUTE IMMEDIATE
         'SELECT MAX(dv.versao) FROM ' || v_tabela || ' d'
         || ' JOIN dataset_versao dv ON dv.id = d.dataset_versao_id'
-        || ' JOIN (' || v_origem || ') s ON ' || v.on_chave
+        || ' JOIN (' || v_origem || ') s ON ' || v_mesmo
         || ' WHERE dv.conjunto = :conjunto'
         INTO v_mais_nova USING p_quarentena_id, v_conjunto;
       IF v_mais_nova > v_versao THEN
@@ -323,17 +326,25 @@ CREATE OR REPLACE PACKAGE BODY pkg_tratada AS
       END IF;
     END IF;
 
-    EXECUTE IMMEDIATE
-      'SELECT COUNT(*) FROM ' || v_tabela || ' d JOIN (' || v_origem || ') s ON ' || v.on_chave
-      INTO v_existia USING p_quarentena_id;
-
-    -- 7. Grava: o mesmo MERGE pela chave que a carga faz.
-    BEGIN
+    v_existia := 0;
+    IF v.on_chave IS NOT NULL THEN
       EXECUTE IMMEDIATE
-        'MERGE INTO ' || v_tabela || ' d USING (' || v_origem || ') s ON (' || v.on_chave || ')'
-        || CASE WHEN v.set_campos IS NOT NULL THEN ' WHEN MATCHED THEN UPDATE SET ' || v.set_campos END
-        || ' WHEN NOT MATCHED THEN INSERT (' || v.colunas || ') VALUES (' || v.valores || ')'
-        USING p_quarentena_id;
+        'SELECT COUNT(*) FROM ' || v_tabela || ' d JOIN (' || v_origem || ') s ON ' || v.on_chave
+        INTO v_existia USING p_quarentena_id;
+    END IF;
+
+    -- 7. Grava como a carga faz: MERGE pela chave, ou, sem chave, mais uma linha.
+    BEGIN
+      IF v.on_chave IS NOT NULL THEN
+        EXECUTE IMMEDIATE
+          'MERGE INTO ' || v_tabela || ' d USING (' || v_origem || ') s ON (' || v.on_chave || ')'
+          || CASE WHEN v.set_campos IS NOT NULL THEN ' WHEN MATCHED THEN UPDATE SET ' || v.set_campos END
+          || ' WHEN NOT MATCHED THEN INSERT (' || v.colunas || ') VALUES (' || v.valores || ')'
+          USING p_quarentena_id;
+      ELSE
+        EXECUTE IMMEDIATE 'INSERT INTO ' || v_tabela || ' (' || v.colunas || ') ' || v_origem
+          USING p_quarentena_id;
+      END IF;
     EXCEPTION
       WHEN OTHERS THEN
         -- ORA-01400: a tabela exige um campo que o mapeamento não preenche.

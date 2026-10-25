@@ -56,6 +56,14 @@ CREATE OR REPLACE PACKAGE BODY pkg_indicadores AS
 
   ------------------------------------------------------------------------------
   -- IRL = soma da área de RL declarada / área declarada do imóvel x 100
+  --
+  -- Imóvel sem nenhum polígono de RL tem IRL 0% quando o município dele foi
+  -- coberto pela carga de RL: sem cobertura não dá para afirmar que não há RL.
+  -- A cobertura vem do código IBGE dentro do cod_imovel ("PR-4100103-..."), e
+  -- não do nome do município: a RL do IAT nem traz o município, e o nome muda
+  -- de grafia entre fontes. Como no DataGIS (V072), a soma das RLs nunca passa
+  -- da área do imóvel: fragmentos sobrepostos ou geometria quebrada não podem
+  -- gerar percentual acima de 100%.
   ------------------------------------------------------------------------------
   FUNCTION calcular_irl(p_cod_imovel IN VARCHAR2 DEFAULT NULL) RETURN NUMBER IS
     v_regra   regra_calculo%ROWTYPE := regra_vigente('IRL');
@@ -70,7 +78,7 @@ CREATE OR REPLACE PACKAGE BODY pkg_indicadores AS
           SELECT i.cod_imovel,
                  i.area_ha                                   AS area_imovel,
                  i.dataset_versao_id                         AS versao_imovel,
-                 NVL(rl.area_rl, 0)                          AS area_rl,
+                 LEAST(NVL(rl.area_rl, 0), i.area_ha)        AS area_rl,
                  NVL(rl.versao_rl, cob.versao_rl)            AS versao_rl
             FROM imovel_rural i
             LEFT JOIN (SELECT cod_imovel,
@@ -79,14 +87,14 @@ CREATE OR REPLACE PACKAGE BODY pkg_indicadores AS
                          FROM car_reserva_legal
                         GROUP BY cod_imovel) rl
               ON rl.cod_imovel = i.cod_imovel
-            LEFT JOIN (SELECT UPPER(municipio)       AS municipio,
-                              MAX(dataset_versao_id) AS versao_rl
+            LEFT JOIN (SELECT SUBSTR(cod_imovel, 4, 7) AS cod_ibge,
+                              MAX(dataset_versao_id)   AS versao_rl
                          FROM car_reserva_legal
-                        WHERE municipio IS NOT NULL
-                        GROUP BY UPPER(municipio)) cob
-              ON cob.municipio = UPPER(i.municipio)
+                        WHERE REGEXP_LIKE(cod_imovel, '^[A-Z]{2}-[0-9]{7}-')
+                        GROUP BY SUBSTR(cod_imovel, 4, 7)) cob
+              ON cob.cod_ibge = SUBSTR(i.cod_imovel, 4, 7)
            WHERE i.area_ha > 0
-             AND (rl.cod_imovel IS NOT NULL OR cob.municipio IS NOT NULL)
+             AND (rl.cod_imovel IS NOT NULL OR cob.cod_ibge IS NOT NULL)
              AND (p_cod_imovel IS NULL OR i.cod_imovel = p_cod_imovel)
         ) c
     ) s

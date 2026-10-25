@@ -181,6 +181,49 @@ class PkgTratadaCargaTest {
                 .isEqualTo("TIPO_DE_DADO_INVALIDO");
     }
 
+    /** "Revalidar" de um registro de tabela sem chave (RL): entra como mais um polígono da carga. */
+    @Test
+    void revalidarSemChaveInsereNaVersaoDaCargaENaoVoltaParaTras() {
+        regra("cod_imovel", 1, "car_reserva_legal", "cod_imovel", "TEXTO", 1, 0, null);
+        regra("num_area", 2, "car_reserva_legal", "area_ha", "DECIMAL", 1, 0, null);
+        geometria("car_reserva_legal", "POLIGONO");
+
+        long e1 = execucao();
+        staging(e1, 1, "{\"cod_imovel\": \"PR-TESTE-R\", \"num_area\": null}");  // reprova: área obrigatória
+        long v1 = versao(e1, 1);
+        validar(e1);
+        gravar("gravar_aprovados", e1, v1);
+        gravar("gravar_reprovados", e1, v1);
+        long quarentena = jdbc.queryForObject("SELECT id FROM registro_quarentena WHERE execucao_id = ?", Long.class, e1);
+
+        jdbc.update("UPDATE registro_quarentena SET payload_corrigido = ? WHERE id = ?",
+                "{\"cod_imovel\": \"PR-TESTE-R\", \"num_area\": \"4.5\"}", quarentena);
+        jdbc.update("BEGIN pkg_tratada.gravar_registro(?); END;", quarentena);
+
+        assertThat(jdbc.queryForMap("SELECT COUNT(*) n, MAX(dataset_versao_id) v FROM car_reserva_legal WHERE cod_imovel = 'PR-TESTE-R'"))
+                .satisfies(m -> assertThat(((Number) m.get("N")).intValue()).isEqualTo(1))
+                .satisfies(m -> assertThat(((Number) m.get("V")).longValue()).isEqualTo(v1));
+        assertThat(jdbc.queryForObject("SELECT status_analise FROM registro_quarentena WHERE id = ?", String.class, quarentena))
+                .isEqualTo("REVALIDADO");
+
+        // Uma carga mais nova já trouxe a RL desse imóvel: revalidar outro pendente da v1 voltaria o dado para trás.
+        long e1b = execucao();
+        staging(e1b, 1, "{\"cod_imovel\": \"PR-TESTE-S\", \"num_area\": null}");
+        long v1b = versao(e1b, 2);
+        validar(e1b);
+        gravar("gravar_reprovados", e1b, v1b);
+        long pendente = jdbc.queryForObject("SELECT id FROM registro_quarentena WHERE execucao_id = ?", Long.class, e1b);
+        long e2 = execucao();
+        staging(e2, 1, "{\"cod_imovel\": \"PR-TESTE-S\", \"num_area\": \"7\"}");
+        long v2 = versao(e2, 3);
+        validar(e2);
+        gravar("gravar_aprovados", e2, v2);
+        jdbc.update("UPDATE registro_quarentena SET payload_corrigido = ? WHERE id = ?",
+                "{\"cod_imovel\": \"PR-TESTE-S\", \"num_area\": \"1\"}", pendente);
+        assertThatThrownBy(() -> jdbc.update("BEGIN pkg_tratada.gravar_registro(?); END;", pendente))
+                .hasMessageContaining("ORA-20014");
+    }
+
     @Test
     void semMapeamentoRecusa() {
         long execucao = execucao();
