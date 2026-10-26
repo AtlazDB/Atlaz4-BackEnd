@@ -43,15 +43,18 @@ public class MapeamentoServiceImpl implements MapeamentoService {
     private final RegraCampoRepository regraRepository;
     private final FonteColunaRepository colunaRepository;
     private final DominioRepository dominioRepository;
+    private final DestinoService destinoService;
 
     public MapeamentoServiceImpl(FonteService fonteService,
                                  RegraCampoRepository regraRepository,
                                  FonteColunaRepository colunaRepository,
-                                 DominioRepository dominioRepository) {
+                                 DominioRepository dominioRepository,
+                                 DestinoService destinoService) {
         this.fonteService = fonteService;
         this.regraRepository = regraRepository;
         this.colunaRepository = colunaRepository;
         this.dominioRepository = dominioRepository;
+        this.destinoService = destinoService;
     }
 
     @Override
@@ -71,12 +74,7 @@ public class MapeamentoServiceImpl implements MapeamentoService {
         FonteColuna coluna = colunaRepository.buscarDaFonte(request.colunaId(), fonteId)
                 .orElseThrow(ColunaNaoEncontradaException::new);
 
-        Dominio dominio = null;
-        if (request.dominioId() != null) {
-            dominio = dominioRepository.buscarPorIdEAtivo(request.dominioId(), true)
-                    .orElseThrow(() -> new RequisicaoInvalidaException(
-                            "Domínio não encontrado ou inativo.", List.of("dominioId")));
-        }
+        Dominio dominio = buscarDominio(request.dominioId());
 
         if (regraRepository.existePorColuna(coluna.getId())) {
             throw new MapeamentoDuplicadoException("A coluna \"" + coluna.getNomeColuna() + "\" já está mapeada.");
@@ -100,11 +98,62 @@ public class MapeamentoServiceImpl implements MapeamentoService {
 
     @Override
     @Transactional
+    public RegraCampo atualizar(Long fonteId, Long mapeamentoId, MapeamentoRequest request) {
+        fonteService.buscarPorId(fonteId); // 404 se a fonte não existir
+        RegraCampo regra = regraRepository.buscarDaFonte(mapeamentoId, fonteId)
+                .orElseThrow(MapeamentoNaoEncontradoException::new);
+
+        // A coluna de origem não muda: para mapear outra coluna, remova e crie de novo.
+        MapeamentoRequest daColuna = new MapeamentoRequest(regra.getFonteColuna().getId(),
+                request.destinoTabela(), request.campoDestino(), request.tipoDado(), request.formatoOrigem(),
+                request.obrigatorio(), request.chave(), request.bloquearRegressao(), request.validarCpfCnpj(),
+                request.politicaGeometria(), request.recortarPr(), request.dominioId(), request.referenciaCruzada());
+        RegraCampo novo = montarEValidar(daColuna); // 400 se os dados forem inválidos
+        Dominio dominio = buscarDominio(request.dominioId());
+
+        boolean trocouDestino = !novo.getDestinoTabela().equals(regra.getDestinoTabela())
+                || !novo.getCampoDestino().equals(regra.getCampoDestino());
+        if (trocouDestino && regraRepository.existePorDestino(fonteId, novo.getDestinoTabela(), novo.getCampoDestino())) {
+            throw new MapeamentoDuplicadoException("O campo " + novo.getDestinoTabela() + "."
+                    + novo.getCampoDestino() + " já recebe outra coluna desta fonte.");
+        }
+
+        regra.setDestinoTabela(novo.getDestinoTabela());
+        regra.setCampoDestino(novo.getCampoDestino());
+        regra.setTipoDado(novo.getTipoDado());
+        regra.setFormatoOrigem(novo.getFormatoOrigem());
+        regra.setObrigatorio(novo.isObrigatorio());
+        regra.setChave(novo.isChave());
+        regra.setBloquearRegressao(novo.isBloquearRegressao());
+        regra.setValidarCpfCnpj(novo.isValidarCpfCnpj());
+        regra.setPoliticaGeometria(novo.getPoliticaGeometria());
+        regra.setRecortarPr(novo.isRecortarPr());
+        regra.setReferenciaCruzada(novo.getReferenciaCruzada());
+        regra.setDominio(dominio);
+
+        try {
+            return regraRepository.saveAndFlush(regra);
+        } catch (DataIntegrityViolationException e) {
+            throw new MapeamentoDuplicadoException("Este campo de destino já foi mapeado.");
+        }
+    }
+
+    @Override
+    @Transactional
     public void remover(Long fonteId, Long mapeamentoId) {
         fonteService.buscarPorId(fonteId); // 404 se a fonte não existir
         RegraCampo regra = regraRepository.buscarDaFonte(mapeamentoId, fonteId)
                 .orElseThrow(MapeamentoNaoEncontradoException::new);
         regraRepository.delete(regra);
+    }
+
+    private Dominio buscarDominio(Long dominioId) {
+        if (dominioId == null) {
+            return null;
+        }
+        return dominioRepository.buscarPorIdEAtivo(dominioId, true)
+                .orElseThrow(() -> new RequisicaoInvalidaException(
+                        "Domínio não encontrado ou inativo.", List.of("dominioId")));
     }
 
     /** Valida o corpo e devolve uma regra com os campos simples já normalizados (sem fonte, coluna nem domínio). */
@@ -122,6 +171,8 @@ public class MapeamentoServiceImpl implements MapeamentoService {
         String campo = minusculo(request.campoDestino());
         validarIdentificador("destinoTabela", tabela);
         validarIdentificador("campoDestino", campo);
+        // A tabela tem de ser um destino da Zona Tratada e ter esse campo (GET /destinos).
+        destinoService.validar(tabela, campo);
 
         String tipo = request.tipoDado().trim().toUpperCase(Locale.ROOT);
         if (!TIPOS.contains(tipo)) {

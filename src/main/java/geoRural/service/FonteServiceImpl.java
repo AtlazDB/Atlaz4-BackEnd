@@ -68,6 +68,51 @@ public class FonteServiceImpl implements FonteService {
     }
 
     @Override
+    @Transactional
+    public Fonte atualizar(Long id, FonteRequest request) {
+        Fonte fonte = buscarPorId(id);
+        if (!vazio(request.sigla()) && !request.sigla().trim().equalsIgnoreCase(fonte.getSigla())) {
+            throw new RequisicaoInvalidaException(
+                    "A sigla não pode ser alterada: ela é a pasta dos arquivos da fonte na zona bruta.",
+                    List.of("sigla"));
+        }
+        // A validação é a do cadastro, com a sigla que já existe.
+        FonteRequest completo = new FonteRequest(request.nome(), fonte.getSigla(), request.orgao(), request.formato(),
+                request.periodicidade(), request.modalidade(), request.urlOrigem(), request.metodoHttp(),
+                request.cabecalhos(), request.credencialRef(), request.corpoRequisicao(), request.paginacao(),
+                request.cron());
+        validar(completo);
+
+        fonte.setNome(request.nome().trim());
+        fonte.setOrgao(request.orgao().trim());
+        fonte.setFormato(request.formato().trim());
+        fonte.setPeriodicidade(vazio(request.periodicidade()) ? "eventual" : request.periodicidade().trim());
+
+        String modalidade = vazio(request.modalidade()) ? "MANUAL" : request.modalidade().trim().toUpperCase();
+        fonte.setModalidade(modalidade);
+        if ("LINK".equals(modalidade)) {
+            fonte.setUrlOrigem(request.urlOrigem().trim());
+            fonte.setMetodoHttp(vazio(request.metodoHttp()) ? "GET" : request.metodoHttp().trim().toUpperCase());
+            fonte.setCorpoRequisicao(request.corpoRequisicao());
+            if (request.cabecalhos() != null) {
+                fonte.setCabecalhos(request.cabecalhos());
+            }
+            if (request.credencialRef() != null) {
+                fonte.setCredencialRef(request.credencialRef().trim());
+            }
+        } else {
+            // Virou upload: o link deixa de valer (e a fonte some da coleta automática).
+            fonte.setUrlOrigem(null);
+            fonte.setMetodoHttp(null);
+            fonte.setCabecalhos(null);
+            fonte.setCredencialRef(null);
+            fonte.setCorpoRequisicao(null);
+            fonte.setColetaSolicitadaEm(null);
+        }
+        return repository.save(fonte);
+    }
+
+    @Override
     public Fonte buscarPorId(Long id) {
         return repository.findById(id)
                 .orElseThrow(() -> new FonteNaoEncontradaException(id));
