@@ -1,14 +1,12 @@
 package geoRural.service;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.core.type.TypeReference;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import geoRural.dto.ColetaResponse;
 import geoRural.entity.ArquivoBruto;
 import geoRural.entity.Fonte;
 import geoRural.exception.ColetaFalhouException;
 import geoRural.exception.RequisicaoInvalidaException;
 import geoRural.repository.ArquivoBrutoRepository;
+import geoRural.repository.FonteRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -18,25 +16,21 @@ import java.io.FilterInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.URI;
-import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
-import java.net.http.HttpTimeoutException;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.security.DigestInputStream;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
-import java.time.Duration;
 import java.time.LocalDateTime;
+import java.time.OffsetDateTime;
+import java.nio.charset.StandardCharsets;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Locale;
-import java.util.Map;
 import java.util.Optional;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -50,15 +44,16 @@ import java.util.regex.Pattern;
  * depende do tamanho do arquivo, e dá para saber se o conteúdo mudou antes de subir qualquer
  * coisa. Conteúdo igual ao da última coleta da fonte não é gravado ("sem mudança").
  *
- * Fica para a coleta do Airflow (Sprint 3): paginação de serviços (ArcGIS, WFS), agendamento e
- * downloads longos sem segurar a requisição da tela.
+ * Com o Airflow ligado (AIRFLOW_HABILITADO), o "Executar" só registra o pedido na fonte: a DAG
+ * coleta_fontes pagina o serviço (ArcGIS, WFS) e traz tudo, sem segurar a requisição da tela.
+ * Sem o Airflow, a coleta é aqui mesmo, num pedido só, e recusa a resposta que o servidor cortou
+ * (conferirCompletude): nunca grava dado pela metade como se estivesse completo.
  */
 @Service
 public class ColetaLinkServiceImpl implements ColetaLinkService {
 
     private static final Logger log = LoggerFactory.getLogger(ColetaLinkServiceImpl.class);
 
-    private static final int MAX_REDIRECIONAMENTOS = 5;
     private static final Pattern NOME_NO_CABECALHO = Pattern.compile("filename\\*?=(?:UTF-8'')?\"?([^\";]+)\"?",
             Pattern.CASE_INSENSITIVE);
     private static final DateTimeFormatter CARIMBO = DateTimeFormatter.ofPattern("yyyyMMdd-HHmm");
@@ -66,11 +61,10 @@ public class ColetaLinkServiceImpl implements ColetaLinkService {
     private final FonteService fonteService;
     private final ArquivoBrutoRepository repository;
     private final ObjectStorageService objectStorageService;
-    private final ValidadorUrlExterna validador;
-    private final ObjectMapper objectMapper;
-    private final HttpClient cliente;
+    private final ClienteHttpExterno cliente;
+    private final FonteRepository fonteRepository;
     private final long limiteBytes;
-    private final Duration esperaResposta;
+    private final boolean coletaNoAirflow;
 
     @Value("${oci.zona-bruta}")
     private String zonaBruta;
@@ -78,22 +72,17 @@ public class ColetaLinkServiceImpl implements ColetaLinkService {
     public ColetaLinkServiceImpl(FonteService fonteService,
                                  ArquivoBrutoRepository repository,
                                  ObjectStorageService objectStorageService,
-                                 ValidadorUrlExterna validador,
-                                 ObjectMapper objectMapper,
+                                 ClienteHttpExterno cliente,
+                                 FonteRepository fonteRepository,
                                  @Value("${app.coleta.limite-bytes:2147483648}") long limiteBytes,
-                                 @Value("${app.coleta.espera-resposta-segundos:120}") long esperaRespostaSegundos) {
+                                 @Value("${app.processamento.airflow:false}") boolean coletaNoAirflow) {
         this.fonteService = fonteService;
         this.repository = repository;
         this.objectStorageService = objectStorageService;
-        this.validador = validador;
-        this.objectMapper = objectMapper;
+        this.cliente = cliente;
+        this.fonteRepository = fonteRepository;
         this.limiteBytes = limiteBytes;
-        this.esperaResposta = Duration.ofSeconds(esperaRespostaSegundos);
-        // Redirecionamento à mão: cada destino passa de novo pelo validador.
-        this.cliente = HttpClient.newBuilder()
-                .connectTimeout(Duration.ofSeconds(30))
-                .followRedirects(HttpClient.Redirect.NEVER)
-                .build();
+        this.coletaNoAirflow = coletaNoAirflow;
     }
 
     @Override
@@ -103,11 +92,19 @@ public class ColetaLinkServiceImpl implements ColetaLinkService {
             throw new RequisicaoInvalidaException(
                     "Esta fonte não tem link de origem: cadastre a URL para poder coletar.", List.of("urlOrigem"));
         }
+        if (coletaNoAirflow) {
+            // A DAG coleta_fontes procura os pedidos a cada 2 minutos.
+            fonte.setColetaSolicitadaEm(OffsetDateTime.now());
+            fonteRepository.save(fonte);
+            log.info("Fonte {}: coleta pedida ao Airflow", fonteId);
+            return ColetaResponse.solicitada();
+        }
 
         Path temporario = null;
         try {
             temporario = Files.createTempFile("coleta-", ".tmp");
             Download download = baixar(fonte, temporario);
+            conferirCompletude(temporario);
 
             Optional<ArquivoBruto> ultimo = repository.findByFonteIdOrderByRecebidoEmDesc(fonteId).stream().findFirst();
             if (ultimo.isPresent() && download.hash().equals(ultimo.get().getHashSha256())) {
@@ -128,6 +125,7 @@ public class ColetaLinkServiceImpl implements ColetaLinkService {
             bruto.setContentType(download.contentType());
             bruto.setHashSha256(download.hash());
             bruto.setStatus(ArquivoBruto.STATUS_RECEBIDO);
+            bruto.setOrigem(ArquivoBruto.ORIGEM_COLETA);
             ArquivoBruto salvo = repository.save(bruto);
             log.info("Fonte {}: coletado {} ({} bytes) em {}", fonteId, download.nome(), download.tamanho(), chave);
             return ColetaResponse.recebido(salvo);
@@ -149,87 +147,62 @@ public class ColetaLinkServiceImpl implements ColetaLinkService {
 
     private record Download(String nome, String contentType, long tamanho, String hash) {}
 
+    private static final Pattern NUMERO_PEDIDO = Pattern.compile("\"numberMatched\"\\s*:\\s*(\\d+)");
+    private static final Pattern NUMERO_DEVOLVIDO = Pattern.compile("\"numberReturned\"\\s*:\\s*(\\d+)");
+    private static final Pattern CORTE_ARCGIS = Pattern.compile("\"exceededTransferLimit\"\\s*:\\s*true");
+
+    /**
+     * Recusa a resposta que o servidor cortou no limite por pedido. O GeoServer (WFS) diz quantos
+     * existem (numberMatched) e quantos mandou (numberReturned); o ArcGIS marca
+     * exceededTransferLimit. Os dois põem isso no começo ou no fim do JSON, então basta ler as
+     * pontas do arquivo, sem carregar tudo.
+     */
+    static void conferirCompletude(Path arquivo) throws IOException {
+        String pontas = pontas(arquivo, 64 * 1024);
+        Matcher existem = NUMERO_PEDIDO.matcher(pontas);
+        Matcher vieram = NUMERO_DEVOLVIDO.matcher(pontas);
+        if (existem.find() && vieram.find() && Long.parseLong(vieram.group(1)) < Long.parseLong(existem.group(1))) {
+            throw new ColetaFalhouException("O serviço entregou " + vieram.group(1) + " de " + existem.group(1)
+                    + " registros num pedido só. Com o Airflow ligado a coleta pagina e traz tudo; sem ele, use um"
+                    + " filtro no link que caiba num pedido.");
+        }
+        if (CORTE_ARCGIS.matcher(pontas).find()) {
+            throw new ColetaFalhouException("O serviço ArcGIS cortou a resposta no limite por pedido. Com o Airflow"
+                    + " ligado a coleta pagina e traz tudo; sem ele, use um filtro (where) que caiba num pedido.");
+        }
+    }
+
+    /** O começo e o fim do arquivo, como texto: onde os serviços põem o total. */
+    private static String pontas(Path arquivo, int tamanho) throws IOException {
+        long total = Files.size(arquivo);
+        try (var canal = java.nio.channels.FileChannel.open(arquivo)) {
+            java.nio.ByteBuffer inicio = java.nio.ByteBuffer.allocate((int) Math.min(tamanho, total));
+            canal.read(inicio, 0);
+            java.nio.ByteBuffer fim = java.nio.ByteBuffer.allocate((int) Math.min(tamanho, total));
+            canal.read(fim, Math.max(0, total - tamanho));
+            return new String(inicio.array(), StandardCharsets.UTF_8) + "\n" + new String(fim.array(), StandardCharsets.UTF_8);
+        }
+    }
+
     private Download baixar(Fonte fonte, Path destino) throws IOException, InterruptedException {
-        URI uri = validador.validar(fonte.getUrlOrigem());
-        String metodo = "POST".equalsIgnoreCase(fonte.getMetodoHttp()) ? "POST" : "GET";
+        HttpResponse<InputStream> resposta = cliente.abrir(new ClienteHttpExterno.Pedido(
+                fonte.getUrlOrigem(), fonte.getMetodoHttp(), fonte.getCabecalhos(), fonte.getCorpoRequisicao()));
 
-        for (int saltos = 0; ; saltos++) {
-            HttpResponse<InputStream> resposta;
-            try {
-                resposta = cliente.send(pedido(fonte, uri, metodo), HttpResponse.BodyHandlers.ofInputStream());
-            } catch (HttpTimeoutException e) {
-                throw new ColetaFalhouException("O servidor de origem demorou demais para responder.", e);
-            }
-            int codigo = resposta.statusCode();
-            Optional<String> destinoRedirecionado = resposta.headers().firstValue("Location");
-
-            if (codigo >= 300 && codigo < 400 && destinoRedirecionado.isPresent()) {
-                resposta.body().close();
-                if (saltos >= MAX_REDIRECIONAMENTOS) {
-                    throw new ColetaFalhouException("O link redirecionou mais de " + MAX_REDIRECIONAMENTOS + " vezes.");
-                }
-                uri = validador.validar(uri.resolve(destinoRedirecionado.get()).toString());
-                // 301, 302 e 303 viram GET, como fazem os navegadores; 307 e 308 mantêm o método.
-                metodo = (codigo == 307 || codigo == 308) ? metodo : "GET";
-                continue;
-            }
-            if (codigo < 200 || codigo >= 300) {
-                resposta.body().close();
-                throw new ColetaFalhouException("O servidor de origem respondeu HTTP " + codigo + ".");
-            }
-
-            MessageDigest sha256 = sha256();
-            long tamanho;
-            try (InputStream in = new DigestInputStream(new Limitado(resposta.body(), limiteBytes), sha256)) {
-                tamanho = Files.copy(in, destino, StandardCopyOption.REPLACE_EXISTING);
-            }
-            if (tamanho == 0) {
-                throw new ColetaFalhouException("O servidor de origem respondeu sem conteúdo.");
-            }
-
-            String contentType = resposta.headers().firstValue("Content-Type")
-                    .map(tipo -> tipo.split(";")[0].trim().toLowerCase(Locale.ROOT))
-                    .orElse("application/octet-stream");
-            String nome = nomeDoArquivo(uri, resposta.headers().firstValue("Content-Disposition").orElse(null),
-                    contentType, fonte);
-            return new Download(nome, contentType, tamanho, HexFormat.of().formatHex(sha256.digest()));
+        MessageDigest sha256 = sha256();
+        long tamanho;
+        try (InputStream in = new DigestInputStream(new Limitado(resposta.body(), limiteBytes), sha256)) {
+            tamanho = Files.copy(in, destino, StandardCopyOption.REPLACE_EXISTING);
         }
-    }
-
-    private HttpRequest pedido(Fonte fonte, URI uri, String metodo) {
-        HttpRequest.Builder pedido = HttpRequest.newBuilder(uri)
-                .timeout(esperaResposta)
-                // Alguns servidores do governo recusam o agente padrão do Java.
-                .header("User-Agent", "GeoRural-DataHub/1.0 (coleta de dados abertos)");
-
-        for (Map.Entry<String, String> cabecalho : cabecalhos(fonte).entrySet()) {
-            try {
-                pedido.header(cabecalho.getKey(), cabecalho.getValue());
-            } catch (IllegalArgumentException e) {
-                throw new RequisicaoInvalidaException(
-                        "O cabeçalho \"" + cabecalho.getKey() + "\" não pode ser enviado.", List.of("cabecalhos"));
-            }
+        if (tamanho == 0) {
+            throw new ColetaFalhouException("O servidor de origem respondeu sem conteúdo.");
         }
 
-        if ("POST".equals(metodo)) {
-            String corpo = fonte.getCorpoRequisicao() == null ? "" : fonte.getCorpoRequisicao();
-            return pedido.POST(HttpRequest.BodyPublishers.ofString(corpo, StandardCharsets.UTF_8)).build();
-        }
-        return pedido.GET().build();
-    }
-
-    private Map<String, String> cabecalhos(Fonte fonte) {
-        String json = fonte.getCabecalhos();
-        if (json == null || json.isBlank()) {
-            return Map.of();
-        }
-        try {
-            return objectMapper.readValue(json, new TypeReference<Map<String, String>>() {});
-        } catch (JsonProcessingException e) {
-            throw new RequisicaoInvalidaException(
-                    "Os cabeçalhos da fonte precisam ser um objeto JSON, como {\"Accept\": \"application/json\"}.",
-                    List.of("cabecalhos"));
-        }
+        String contentType = resposta.headers().firstValue("Content-Type")
+                .map(tipo -> tipo.split(";")[0].trim().toLowerCase(Locale.ROOT))
+                .orElse("application/octet-stream");
+        String nome = nomeDoArquivo(resposta.uri(), resposta.headers().firstValue("Content-Disposition").orElse(null),
+                contentType, fonte);
+        return new Download(nome, contentType, tamanho, HexFormat.of().formatHex(sha256.digest()));
     }
 
     /**

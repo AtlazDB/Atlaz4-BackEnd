@@ -437,6 +437,27 @@ class PkgQualityTest {
         assertThat(erros(CAMADA, 1)).containsExactly("FORA_DO_RECORTE_TERRITORIAL");
     }
 
+    /**
+     * Divisa com SC, em Flor da Serra do Sul: as bases do CAR e da malha do IAT discordam em até
+     * centenas de metros. A 400 m do lado de SC aprova (margem de 1 km); a 1,9 km reprova.
+     */
+    @Test
+    void margemDeUmKmNaDivisa() {
+        regraGeometriaComRecortePr();
+        linhaComRetangulo(CAMADA, 1, """
+                {"cod_imovel": "PR-DIVISA", "area_ha": "1", "situacao": "ATIVO"}""",
+                -53.3600, -26.2550, -53.3595, -26.2545);
+        linhaComRetangulo(CAMADA, 2, """
+                {"cod_imovel": "PR-LONGE", "area_ha": "1", "situacao": "ATIVO"}""",
+                -53.3600, -26.2710, -53.3595, -26.2705);
+
+        validar();
+
+        assertThat(erros(CAMADA, 1)).isEmpty();
+        assertThat(status(CAMADA, 1)).isEqualTo("APROVADO");
+        assertThat(erros(CAMADA, 2)).containsExactly("FORA_DO_RECORTE_TERRITORIAL");
+    }
+
     // ----- tipo de geometria ----------------------------------------------------
     // O formato_origem da regra de geometria diz o tipo esperado; sem ele, polígono.
 

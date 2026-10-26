@@ -14,6 +14,9 @@ public class ArquivoBruto {
     public static final String STATUS_PROCESSADO  = "PROCESSADO";
     public static final String STATUS_REJEITADO   = "REJEITADO";
 
+    public static final String ORIGEM_UPLOAD = "UPLOAD";
+    public static final String ORIGEM_COLETA = "COLETA";
+
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
@@ -47,9 +50,16 @@ public class ArquivoBruto {
     @Column(name = "PROCESSADO_EM")
     private OffsetDateTime processadoEm;
 
+    /** UPLOAD (enviado pela tela) ou COLETA (baixado do link da fonte). V18. */
+    @Column(name = "ORIGEM", nullable = false)
+    private String origem = ORIGEM_UPLOAD;
+
     // Getters e Setters
     public Long getId() { return id; }
     public void setId(Long id) { this.id = id; }
+
+    public String getOrigem() { return origem; }
+    public void setOrigem(String origem) { this.origem = origem; }
 
     public Fonte getFonte() { return fonte; }
     public void setFonte(Fonte fonte) { this.fonte = fonte; }

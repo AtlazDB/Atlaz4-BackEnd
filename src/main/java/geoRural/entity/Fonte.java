@@ -65,6 +65,18 @@ public class Fonte {
     @Column(name = "CRON")
     private String cron;
 
+    // --- Coleta pelo Airflow (V18) ---
+
+    /** Pedido de coleta ainda não atendido pela DAG coleta_fontes. */
+    @Column(name = "COLETA_SOLICITADA_EM")
+    private OffsetDateTime coletaSolicitadaEm;
+
+    @Column(name = "ULTIMA_COLETA_EM")
+    private OffsetDateTime ultimaColetaEm;
+
+    @Column(name = "ULTIMA_COLETA_MENSAGEM")
+    private String ultimaColetaMensagem;
+
     // Construtores, Getters e Setters
     public Fonte() {}
 
@@ -114,4 +126,11 @@ public class Fonte {
 
     public String getCron() { return cron; }
     public void setCron(String cron) { this.cron = cron; }
+
+    public OffsetDateTime getColetaSolicitadaEm() { return coletaSolicitadaEm; }
+    public void setColetaSolicitadaEm(OffsetDateTime coletaSolicitadaEm) { this.coletaSolicitadaEm = coletaSolicitadaEm; }
+
+    public OffsetDateTime getUltimaColetaEm() { return ultimaColetaEm; }
+
+    public String getUltimaColetaMensagem() { return ultimaColetaMensagem; }
 }
