@@ -62,6 +62,12 @@ public class FonteController {
         return toResponse(fonte);
     }
 
+    /** Edita a fonte (a sigla não muda). 200 com a fonte · 400 · 404. */
+    @PutMapping("/{id}")
+    public FonteResponse atualizar(@PathVariable Long id, @RequestBody FonteRequest request) {
+        return toResponse(fonteService.atualizar(id, request));
+    }
+
     @PostMapping("/{id}/arquivos")
     @ResponseStatus(HttpStatus.CREATED)
     public UploadResponse enviarArquivo(

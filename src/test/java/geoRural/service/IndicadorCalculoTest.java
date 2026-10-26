@@ -133,7 +133,6 @@ class IndicadorCalculoTest {
                 .containsExactly("IFC"); // IFC sim (focos cobrem o estado), IRL não
     }
 
-    /** Como no DataGIS (V072): 8 + 7 = 15 ha de RL num imóvel de 10 ha contam como 10 ha (100%). */
     @Test
     void rlMaiorQueOImovelContaComoCemPorCento() {
         calcularCaso();

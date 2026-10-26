@@ -1,5 +1,5 @@
 --------------------------------------------------------------------------------
--- GeoRural DataHub — Seed de demonstração: as 4 fontes por link do DataGIS
+-- GeoRural DataHub — Seed de demonstração: as 4 fontes 
 --------------------------------------------------------------------------------
 -- NÃO é migration: fica fora do Flyway e roda à mão, no banco onde a demo
 -- acontece (SQL Developer, SQLcl ou "Executar script"). Pode rodar de novo:
@@ -37,6 +37,10 @@
 --   * No CAR-WFS, a situação (status_imovel) liga o desempate de código
 --     repetido (AT vence, depois o mais recente, a cancelada perde no empate).
 --------------------------------------------------------------------------------
+
+-- As URLs têm "&" (ArcGIS: ...&outFields=*...). Sem isto o SQL Developer, o SQLcl e o
+-- Database Actions tratam "&outFields" como variável de substituição e pedem um valor.
+SET DEFINE OFF
 
 DECLARE
   v_fonte NUMBER;
@@ -116,7 +120,6 @@ BEGIN
   regra('geometry', 14, 'GEOMETRIA', 'foco_calor', 'geometria', 'GEOMETRIA', p_obrigatorio => 1,
         p_formato => 'PONTO', p_politica => 'QUARENTENA', p_recortar_pr => 1);
 
-  -- Reserva Legal do CAR, PR inteiro (o DataGIS filtra 3 municípios; aqui where=1=1).
   fonte('RL-IAT', 'Reserva Legal do CAR no Paraná (IAT)', 'SFB/SICAR (via IAT/PR)', 'mensal',
         'https://geopr.iat.pr.gov.br/server/rest/services/00_PUBLICACOES/Base_Geo_Cadastro_Ambiental_rural/FeatureServer/2/query?where=1=1&outFields=*&f=geojson&outSR=4674');
   regra('cod_imovel', 4, 'TEXTO',     'car_reserva_legal', 'cod_imovel', 'TEXTO',     p_obrigatorio => 1);

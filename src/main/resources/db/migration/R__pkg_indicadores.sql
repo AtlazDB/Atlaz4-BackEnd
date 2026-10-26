@@ -54,17 +54,7 @@ CREATE OR REPLACE PACKAGE BODY pkg_indicadores AS
   END parametro;
 
 
-  ------------------------------------------------------------------------------
-  -- IRL = soma da área de RL declarada / área declarada do imóvel x 100
-  --
-  -- Imóvel sem nenhum polígono de RL tem IRL 0% quando o município dele foi
-  -- coberto pela carga de RL: sem cobertura não dá para afirmar que não há RL.
-  -- A cobertura vem do código IBGE dentro do cod_imovel ("PR-4100103-..."), e
-  -- não do nome do município: a RL do IAT nem traz o município, e o nome muda
-  -- de grafia entre fontes. Como no DataGIS (V072), a soma das RLs nunca passa
-  -- da área do imóvel: fragmentos sobrepostos ou geometria quebrada não podem
-  -- gerar percentual acima de 100%.
-  ------------------------------------------------------------------------------
+
   FUNCTION calcular_irl(p_cod_imovel IN VARCHAR2 DEFAULT NULL) RETURN NUMBER IS
     v_regra   regra_calculo%ROWTYPE := regra_vigente('IRL');
     v_minimo  NUMBER := parametro(v_regra, 'percentual_minimo');
