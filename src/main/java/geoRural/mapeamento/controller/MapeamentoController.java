@@ -8,6 +8,7 @@ import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.ResponseStatus;
@@ -36,6 +37,13 @@ public class MapeamentoController {
     @ResponseStatus(HttpStatus.CREATED)
     public MapeamentoResponse criar(@PathVariable Long fonteId, @RequestBody MapeamentoRequest request) {
         return MapeamentoResponse.de(mapeamentoService.criar(fonteId, request));
+    }
+
+    /** Edita destino e regras (a coluna não muda). 200 · 400 · 404 · 409. */
+    @PutMapping("/{mapeamentoId}")
+    public MapeamentoResponse atualizar(@PathVariable Long fonteId, @PathVariable Long mapeamentoId,
+                                        @RequestBody MapeamentoRequest request) {
+        return MapeamentoResponse.de(mapeamentoService.atualizar(fonteId, mapeamentoId, request));
     }
 
     @DeleteMapping("/{mapeamentoId}")

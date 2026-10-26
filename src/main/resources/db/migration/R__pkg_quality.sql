@@ -124,13 +124,6 @@ CREATE OR REPLACE PACKAGE BODY pkg_quality AS
       RETURN NULL;
     END IF;
 
-    -- Trava de área (lição do DataGIS, V060/V063): o RECTIFY pode "consertar" um
-    -- polígono jogando parte dele fora, e o resultado passa na validação. Na RL do
-    -- IAT, 206 de 26 mil correções mudaram mais de 1% da área e 54 ficaram com área
-    -- zero. Recusa a correção que zera ou PERDE mais de 1% da área: o registro vai
-    -- para a quarentena, para uma pessoa decidir. Ganhar área é esperado: num anel
-    -- que cruza ele mesmo ("borboleta"), o SDO_AREA da original subtrai um lado do
-    -- outro e sai menor que a real.
     IF v_fixed IS NOT NULL AND MOD(p_geom.GET_GTYPE(), 4) = 3 THEN
       BEGIN
         v_antes  := SDO_GEOM.SDO_AREA(p_geom, c_tolerance);
@@ -596,13 +589,7 @@ CREATE OR REPLACE PACKAGE BODY pkg_quality AS
         END IF;
       END LOOP;
 
-      -- Fora do PR: reprova só a que fica a mais de 1 km do PR (c_margem_divisa).
-      -- Compara com o contorno do estado em grade (recorte_territorial, V19),
-      -- não com a malha municipal inteira: ~10x mais rápido. Parcialmente fora
-      -- aprova, sem recorte. O DataGIS só confere a caixa do PR com margem; a
-      -- margem de 1 km pega o mesmo erro grosseiro sem aceitar o vizinho. As que já têm erro
-      -- GEOMETRIA_INVALIDA ficam de fora: estão reprovadas e o SDO_ANYINTERACT pode falhar nelas.
-      -- As do tipo errado também (GEOMETRIA_TIPO_INCOMPATIVEL).
+
       IF v_check_pr = 1 THEN
         INSERT INTO staging_erro (staging_id, tipo_erro, campo, motivo)
         SELECT s.id, 'FORA_DO_RECORTE_TERRITORIAL', v_geometry_column, 'Geometria a mais de 1 km do Paraná.'
