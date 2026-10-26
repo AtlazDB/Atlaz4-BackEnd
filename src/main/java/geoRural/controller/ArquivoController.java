@@ -2,7 +2,7 @@ package geoRural.controller;
 
 import geoRural.dto.ProcessamentoResponse;
 import geoRural.service.ArquivoBrutoService;
-import geoRural.service.ProcessamentoCarService;
+import geoRural.service.ProcessamentoArquivoService;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.*;
 
@@ -10,22 +10,23 @@ import org.springframework.web.bind.annotation.*;
 @RequestMapping("/api/v1/arquivos")
 public class ArquivoController {
 
-    private final ProcessamentoCarService processamentoCarService;
+    private final ProcessamentoArquivoService processamentoArquivoService;
     private final ArquivoBrutoService arquivoBrutoService;
 
-    public ArquivoController(ProcessamentoCarService processamentoCarService,
+    public ArquivoController(ProcessamentoArquivoService processamentoArquivoService,
                              ArquivoBrutoService arquivoBrutoService) {
-        this.processamentoCarService = processamentoCarService;
+        this.processamentoArquivoService = processamentoArquivoService;
         this.arquivoBrutoService = arquivoBrutoService;
     }
 
     /**
      * Síncrono por enquanto: a resposta só volta quando o processamento termina.
      * Com o arquivo do Paraná isso vai passar do timeout do navegador; aí vira @Async + 202.
+     * O leitor é escolhido pela fonte do arquivo: CAR (imóveis), CAR-RL (Reserva Legal) ou INPE-FOCOS.
      */
     @PostMapping("/{id}/processar")
     public ProcessamentoResponse processar(@PathVariable Long id) {
-        return processamentoCarService.processar(id);
+        return processamentoArquivoService.processar(id);
     }
 
     /** Só para arquivo REJEITADO que nunca gerou versão de dados; senão 409. */

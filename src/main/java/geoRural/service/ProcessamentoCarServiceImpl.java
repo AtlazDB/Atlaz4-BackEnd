@@ -7,6 +7,7 @@ import java.util.List;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionTemplate;
 
@@ -30,12 +31,21 @@ public class ProcessamentoCarServiceImpl implements ProcessamentoCarService {
     private final ObjectStorageService objectStorage;
     private final TransactionTemplate transacao;
 
+    /**
+     * true: quem processa é o Airflow (DAG varredor_bruta → processar_arquivo) e este serviço só
+     * devolve o arquivo para a fila. false: processa aqui mesmo, como antes. Vem de
+     * AIRFLOW_HABILITADO; na máquina de quem não roda o Airflow, fica false.
+     */
+    private final boolean processarNoAirflow;
+
     public ProcessamentoCarServiceImpl(GravadorImoveis gravador, LeitorShapefile leitor,
-                                       ObjectStorageService objectStorage, TransactionTemplate transacao) {
+                                       ObjectStorageService objectStorage, TransactionTemplate transacao,
+                                       @Value("${app.processamento.airflow:false}") boolean processarNoAirflow) {
         this.gravador = gravador;
         this.leitor = leitor;
         this.objectStorage = objectStorage;
         this.transacao = transacao;
+        this.processarNoAirflow = processarNoAirflow;
     }
 
     @Override
@@ -47,6 +57,13 @@ public class ProcessamentoCarServiceImpl implements ProcessamentoCarService {
                 || !arquivo.nomeOriginal().toLowerCase().endsWith(".zip")) {
             throw new RequisicaoInvalidaException(
                     "Só arquivos .zip da fonte CAR (shapefile de imóveis) podem ser processados.");
+        }
+        if (processarNoAirflow) {
+            // RECEBIDO é o que o varredor do Airflow procura: em até 2 minutos ele pega o arquivo.
+            if (!gravador.marcarRecebido(arquivoId)) {
+                throw new ProcessamentoEmAndamentoException(arquivoId);
+            }
+            return ProcessamentoResponse.agendado(arquivoId);
         }
         if (!gravador.marcarProcessando(arquivoId)) {
             throw new ProcessamentoEmAndamentoException(arquivoId);
@@ -122,7 +139,7 @@ public class ProcessamentoCarServiceImpl implements ProcessamentoCarService {
 
         void descarregar(long datasetVersaoId, long execucaoId) {
             gravador.gravarImoveis(datasetVersaoId, aprovados);
-            gravador.gravarQuarentena(execucaoId, reprovados);
+            gravador.gravarQuarentena(execucaoId, datasetVersaoId, GravadorImoveis.ENTIDADE, reprovados);
             aprovados.clear();
             reprovados.clear();
         }

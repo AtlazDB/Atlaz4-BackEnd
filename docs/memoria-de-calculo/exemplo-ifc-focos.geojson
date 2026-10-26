@@ -1,0 +1,226 @@
+{
+ "type": "FeatureCollection",
+ "features": [
+  {
+   "type": "Feature",
+   "geometry": {
+    "type": "Point",
+    "coordinates": [
+     -51.46457,
+     -26.28648
+    ]
+   },
+   "properties": {
+    "id": "255d1f45-da67-300f-9636-b0321207c183",
+    "data_hora_gmt": "2026-09-26 16:39:00",
+    "satelite": "NPP-375",
+    "municipio": "BITURUNA",
+    "frp": "17.3"
+   }
+  },
+  {
+   "type": "Feature",
+   "geometry": {
+    "type": "Point",
+    "coordinates": [
+     -51.4684,
+     -26.2868
+    ]
+   },
+   "properties": {
+    "id": "462a17e3-d60f-3aff-b9a8-320102529701",
+    "data_hora_gmt": "2026-09-26 16:39:00",
+    "satelite": "NPP-375",
+    "municipio": "BITURUNA",
+    "frp": "11.1"
+   }
+  },
+  {
+   "type": "Feature",
+   "geometry": {
+    "type": "Point",
+    "coordinates": [
+     -51.46813,
+     -26.29093
+    ]
+   },
+   "properties": {
+    "id": "2e385716-60a7-3749-9e69-ece03bc9781e",
+    "data_hora_gmt": "2026-09-26 16:39:00",
+    "satelite": "NPP-375",
+    "municipio": "BITURUNA",
+    "frp": "6.1"
+   }
+  },
+  {
+   "type": "Feature",
+   "geometry": {
+    "type": "Point",
+    "coordinates": [
+     -51.46431,
+     -26.29063
+    ]
+   },
+   "properties": {
+    "id": "5f1fb0a9-2e94-333f-888d-fbdf946fe612",
+    "data_hora_gmt": "2026-09-26 16:39:00",
+    "satelite": "NPP-375",
+    "municipio": "BITURUNA",
+    "frp": "10.3"
+   }
+  },
+  {
+   "type": "Feature",
+   "geometry": {
+    "type": "Point",
+    "coordinates": [
+     -51.46469,
+     -26.28507
+    ]
+   },
+   "properties": {
+    "id": "6a9501f4-3841-338c-8926-9835c470ce16",
+    "data_hora_gmt": "2026-09-26 16:39:00",
+    "satelite": "NPP-375",
+    "municipio": "BITURUNA",
+    "frp": "6.4"
+   }
+  },
+  {
+   "type": "Feature",
+   "geometry": {
+    "type": "Point",
+    "coordinates": [
+     -51.46853,
+     -26.28538
+    ]
+   },
+   "properties": {
+    "id": "98befed4-266b-33a1-aa2f-1d3cb55914bc",
+    "data_hora_gmt": "2026-09-26 16:39:00",
+    "satelite": "NPP-375",
+    "municipio": "BITURUNA",
+    "frp": "3.9"
+   }
+  },
+  {
+   "type": "Feature",
+   "geometry": {
+    "type": "Point",
+    "coordinates": [
+     -51.46732,
+     -26.28603
+    ]
+   },
+   "properties": {
+    "id": "c1448f0f-c608-3936-9be5-fd712bb8186b",
+    "data_hora_gmt": "2026-09-26 16:58:00",
+    "satelite": "NOAA-20",
+    "municipio": "BITURUNA",
+    "frp": "16.9"
+   }
+  },
+  {
+   "type": "Feature",
+   "geometry": {
+    "type": "Point",
+    "coordinates": [
+     -51.46678,
+     -26.28974
+    ]
+   },
+   "properties": {
+    "id": "09360713-ab92-3b06-8f11-d668776711bf",
+    "data_hora_gmt": "2026-09-26 16:58:00",
+    "satelite": "NOAA-20",
+    "municipio": "BITURUNA",
+    "frp": "9.6"
+   }
+  },
+  {
+   "type": "Feature",
+   "geometry": {
+    "type": "Point",
+    "coordinates": [
+     -51.46429,
+     -26.28771
+    ]
+   },
+   "properties": {
+    "id": "8a861cbc-0cab-30cf-a1ea-d80c8123ac71",
+    "data_hora_gmt": "2026-09-26 17:41:00",
+    "satelite": "NOAA-21",
+    "municipio": "BITURUNA",
+    "frp": "18.5"
+   }
+  },
+  {
+   "type": "Feature",
+   "geometry": {
+    "type": "Point",
+    "coordinates": [
+     -51.46569,
+     -26.28293
+    ]
+   },
+   "properties": {
+    "id": "73080a1d-1f71-3f49-8544-ad1c9f38a78d",
+    "data_hora_gmt": "2026-09-26 17:41:00",
+    "satelite": "NOAA-21",
+    "municipio": "BITURUNA",
+    "frp": "18.5"
+   }
+  },
+  {
+   "type": "Feature",
+   "geometry": {
+    "type": "Point",
+    "coordinates": [
+     -51.46875,
+     -26.28459
+    ]
+   },
+   "properties": {
+    "id": "885298a0-9567-34bd-b3ce-360f70f0cfd1",
+    "data_hora_gmt": "2026-09-26 18:19:00",
+    "satelite": "NPP-375",
+    "municipio": "BITURUNA",
+    "frp": "13.6"
+   }
+  },
+  {
+   "type": "Feature",
+   "geometry": {
+    "type": "Point",
+    "coordinates": [
+     -51.47385,
+     -26.28567
+    ]
+   },
+   "properties": {
+    "id": "b714f575-f303-3897-ba14-8abe1d55fa2a",
+    "data_hora_gmt": "2026-09-26 19:04:00",
+    "satelite": "AQUA_M-T",
+    "municipio": "BITURUNA",
+    "frp": "24.7"
+   }
+  },
+  {
+   "type": "Feature",
+   "geometry": {
+    "type": "Point",
+    "coordinates": [
+     -51.45883,
+     -26.28394
+    ]
+   },
+   "properties": {
+    "id": "53ece049-cd19-3f85-bae5-8d2354c0fd0d",
+    "data_hora_gmt": "2026-09-26 19:04:00",
+    "satelite": "AQUA_M-T",
+    "municipio": "BITURUNA",
+    "frp": "11.1"
+   }
+  }
+ ]
+}

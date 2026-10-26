@@ -4,7 +4,7 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import geoRural.exception.ExclusaoNaoPermitidaException;
 import geoRural.service.ArquivoBrutoService;
-import geoRural.service.ProcessamentoCarService;
+import geoRural.service.ProcessamentoArquivoService;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
@@ -29,7 +29,7 @@ class ArquivoControllerTest {
     private MockMvc mockMvc;
 
     @MockitoBean
-    private ProcessamentoCarService processamentoCarService;
+    private ProcessamentoArquivoService processamentoArquivoService;
 
     @MockitoBean
     private ArquivoBrutoService arquivoBrutoService;

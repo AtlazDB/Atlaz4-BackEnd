@@ -3,16 +3,21 @@ package geoRural.service;
 import java.util.HashSet;
 import java.util.Set;
 
+import org.locationtech.jts.geom.Coordinate;
 import org.locationtech.jts.geom.Geometry;
 import org.locationtech.jts.geom.MultiPolygon;
 import org.locationtech.jts.geom.Polygon;
-import org.locationtech.jts.geom.util.GeometryFixer;
+import org.locationtech.jts.operation.valid.IsValidOp;
+import org.locationtech.jts.operation.valid.TopologyValidationError;
 
 import geoRural.dto.ImovelLido;
 
 /**
- * Valida e corrige os imóveis de UM arquivo. Guarda os códigos já vistos para achar duplicados,
+ * Valida os imóveis de UM arquivo. Guarda os códigos já vistos para achar duplicados,
  * por isso crie uma instância nova para cada arquivo_bruto processado (não é um bean do Spring).
+ *
+ * Não corrige geometria: a regra da Tarefa 2 é que nenhuma geometria seja corrigida sem registro.
+ * Geometria inválida vai para a quarentena com o erro e o ponto onde ele acontece.
  */
 public class ValidadorImovel {
 
@@ -24,7 +29,7 @@ public class ValidadorImovel {
      */
     static final int SRID = 4326;
 
-    /** Aprovado: {@code geometria} corrigida e {@code motivoQuarentena} nulo. Senão, o contrário. */
+    /** Aprovado: {@code geometria} pronta para o Oracle e {@code motivoQuarentena} nulo. Senão, o contrário. */
     public record Resultado(ImovelLido imovel, Geometry geometria, String motivoQuarentena) {
         public boolean aprovado() {
             return motivoQuarentena == null;
@@ -47,21 +52,47 @@ public class ValidadorImovel {
             return quarentena(imovel, "sem geometria");
         }
 
-        // copy() para não alterar a geometria do ImovelLido (normalize() muda o objeto no lugar)
-        g = g.isValid() ? g.copy() : GeometryFixer.fix(g);
-        if (g.isEmpty() || !g.isValid() || !(g instanceof Polygon || g instanceof MultiPolygon)) {
-            return quarentena(imovel, "geometria irreparável");
+        String problema = problemaNaGeometria(g);
+        if (problema != null) {
+            return quarentena(imovel, problema);
         }
+
+        return new Resultado(imovel, prepararGeometria(g), null);
+    }
+
+    static String problemaNaGeometria(Geometry g) {
+        if (!(g instanceof Polygon || g instanceof MultiPolygon)) {
+            return "geometria não é polígono: " + g.getGeometryType();
+        }
+        TopologyValidationError erro = new IsValidOp(g).getValidationError();
+        return erro == null ? null : "geometria inválida: " + descrever(erro);
+    }
+
+    
+    static Geometry prepararGeometria(Geometry original) {
+        if (original == null || original.isEmpty() || problemaNaGeometria(original) != null) {
+            return null;
+        }
+        // copy() para não alterar a geometria de quem chamou (normalize() muda o objeto no lugar)
+        Geometry g = original.copy();
 
         // Mesma lição da V6: o Oracle exige anel externo anti-horário e o shapefile guarda horário.
         g.normalize();   // JTS: anel externo horário, buracos anti-horário
         g = g.reverse(); // inverte → anel externo anti-horário, como o Oracle espera
         g.setSRID(SRID);
-
-        return new Resultado(imovel, g, null);
+        return g;
     }
 
     private static Resultado quarentena(ImovelLido imovel, String motivo) {
         return new Resultado(imovel, null, motivo);
+    }
+
+    /** "Self-intersection em (-51.0, -23.0)": o tipo do erro e onde ele está, para quem analisar a quarentena. */
+    private static String descrever(TopologyValidationError erro) {
+        Coordinate ponto = erro.getCoordinate();
+        if (ponto == null) {
+            return erro.getMessage();
+        }
+        return erro.getMessage() + " em (" + ponto.x + ", " + ponto.y + ")";
     }
 }

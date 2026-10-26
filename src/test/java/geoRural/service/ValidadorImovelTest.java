@@ -1,7 +1,9 @@
 package geoRural.service;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.Map;
@@ -52,22 +54,49 @@ class ValidadorImovelTest {
     }
 
     @Test
-    void consertaGravataBorboleta() throws ParseException {
-        // Anel que se cruza no meio: inválido, o GeometryFixer separa em dois triângulos
+    void gravataBorboletaVaiParaQuarentenaSemSerCorrigida() throws ParseException {
+        // Anel que se cruza no meio, em (1, 1). Antes o GeometryFixer consertava sem registro;
+        // agora vai para a quarentena dizendo o erro e onde ele está.
         var resultado = validador.validar(imovel("PR-1", "POLYGON ((0 0, 2 2, 2 0, 0 2, 0 0))"));
 
-        assertTrue(resultado.aprovado());
-        assertInstanceOf(MultiPolygon.class, resultado.geometria());
-        assertTrue(resultado.geometria().isValid());
+        assertFalse(resultado.aprovado());
+        assertNull(resultado.geometria());
+        assertEquals("geometria inválida: Self-intersection em (1.0, 1.0)", resultado.motivoQuarentena());
+    }
+
+    @Test
+    void poligonoDegeneradoVaiParaQuarentena() throws ParseException {
+        // Pontos em linha reta: área zero, não é um polígono válido
+        var resultado = validador.validar(imovel("PR-1", "POLYGON ((0 0, 1 1, 2 2, 0 0))"));
+
+        assertFalse(resultado.aprovado());
+        assertTrue(resultado.motivoQuarentena().startsWith("geometria inválida: "));
     }
 
     @Test
     void geometriaQueNaoEPoligonoVaiParaQuarentena() throws ParseException {
-        assertEquals("geometria irreparável",
+        assertEquals("geometria não é polígono: LineString",
                 validador.validar(imovel("PR-1", "LINESTRING (0 0, 1 1)")).motivoQuarentena());
-        // Polígono degenerado (área zero): o conserto vira vazio
-        assertEquals("geometria irreparável",
-                validador.validar(imovel("PR-2", "POLYGON ((0 0, 1 1, 2 2, 0 0))")).motivoQuarentena());
+    }
+
+    @Test
+    void multiPoligonoValidoEAprovado() throws ParseException {
+        var resultado = validador.validar(imovel("PR-1",
+                "MULTIPOLYGON (((0 0, 0 1, 1 1, 1 0, 0 0)), ((2 2, 2 3, 3 3, 3 2, 2 2)))"));
+
+        assertTrue(resultado.aprovado());
+        assertInstanceOf(MultiPolygon.class, resultado.geometria());
+    }
+
+    @Test
+    void naoAlteraAGeometriaOriginalDoImovel() throws ParseException {
+        var imovel = imovel("PR-1", QUADRADO_HORARIO);
+        var original = imovel.geometria().copy();
+
+        validador.validar(imovel);
+
+        // normalize() e reverse() trabalham na cópia: o ImovelLido continua como veio do arquivo
+        assertTrue(original.equalsExact(imovel.geometria()));
     }
 
     private static ImovelLido imovel(String cod, String wkt) throws ParseException {

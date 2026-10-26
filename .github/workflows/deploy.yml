@@ -1,0 +1,74 @@
+# Deploy automatico: todo push na main (merge de PR) verifica o back e publica na VM.
+#
+# Como funciona: o job "deploy" entra na VM por SSH com uma chave dedicada. Na VM, essa
+# chave esta presa a um unico comando (command= no authorized_keys), que roda o deploy.sh:
+# ele baixa back e front da main e reconstroi os containers. Mesmo que a chave vaze, ela
+# so consegue disparar um deploy.
+#
+# Segredos necessarios (Settings > Secrets and variables > Actions, no repositorio ou na
+# organizacao AtlazDB para servir aos dois repositorios):
+#   VM_HOST         IP publico da VM
+#   VM_USER         usuario dono do deploy na VM (ubuntu)
+#   VM_SSH_KEY      chave privada dedicada ao deploy (a publica fica no authorized_keys da VM)
+#   VM_KNOWN_HOSTS  saida de "ssh-keyscan -H <IP da VM>" (garante que e a VM certa)
+#
+# O mesmo workflow existe no Atlaz4-FrontEnd: merge em qualquer um dos dois publica os dois.
+
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: # permite disparar na mao pela aba Actions
+
+# Um deploy por vez neste repositorio; o que chegar depois espera o anterior terminar.
+# Entre os dois repositorios, quem garante a fila e o flock na VM.
+concurrency:
+  group: deploy-producao
+  cancel-in-progress: false
+
+jobs:
+  verificar:
+    name: Compilar e testar
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+
+      # Os testes de repositorio e de servico precisam do Oracle do docker-compose e ficam
+      # de fora. Estes rodam sem banco: controllers (WebMvcTest), validador e leitor de shapefile.
+      - name: Compilar e rodar os testes que nao precisam de banco
+        run: >
+          mvn -B -q verify
+          -Dtest='*ControllerTest,ValidadorImovelTest,LeitorShapefileTest'
+          -Dsurefire.failIfNoSpecifiedTests=false
+
+  deploy:
+    name: Publicar na VM
+    needs: verificar
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Preparar a chave SSH
+        env:
+          VM_SSH_KEY: ${{ secrets.VM_SSH_KEY }}
+          VM_KNOWN_HOSTS: ${{ secrets.VM_KNOWN_HOSTS }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$VM_SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          printf '%s\n' "$VM_KNOWN_HOSTS" > ~/.ssh/known_hosts
+
+      # Nenhum comando e enviado: a VM so aceita esta chave para rodar o deploy.sh
+      # (command= no authorized_keys). A saida do build aparece aqui no log.
+      - name: Rodar o deploy.sh na VM
+        env:
+          VM_HOST: ${{ secrets.VM_HOST }}
+          VM_USER: ${{ secrets.VM_USER }}
+        run: ssh -i ~/.ssh/deploy_key -o BatchMode=yes -o ServerAliveInterval=30 "$VM_USER@$VM_HOST"
