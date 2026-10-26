@@ -93,7 +93,7 @@ public class QuarentenaService {
         RegistroQuarentena registro = buscarEmAberto(id);
         if (registro.getGeometria() == null) {
             throw new RequisicaoInvalidaException(
-                    "O registro não tem geometria para corrigir automaticamente: desenhe uma nova no mapa.",
+                    "O registro não tem geometria legível para corrigir automaticamente: corrija pelo GeoJSON ou descarte com justificativa.",
                     List.of("geometria"));
         }
 
